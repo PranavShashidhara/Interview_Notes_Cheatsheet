@@ -2,7 +2,7 @@
 
 > **Covers:** CUDA C/C++ Programming, Memory Management, Synchronization, Streams, Profiling, NVIDIA System Tools, and Best Practices
 
----
+
 
 ## Table of Contents
 
@@ -27,12 +27,12 @@
 19. [Performance Optimization Checklist](#19-performance-optimization-checklist)
 20. [Compute Capability Reference](#20-compute-capability-reference)
 
----
+
 
 ## 1. GPU Architecture Concepts
 
 | Term | Description |
-|------|-------------|
+||-|
 | **SM (Streaming Multiprocessor)** | Core compute unit; each GPU has many SMs |
 | **CUDA Core** | Scalar FP32/INT32 execution unit inside an SM |
 | **Tensor Core** | Matrix multiply unit (FP16/BF16/INT8); present since Volta (CC 7.0) |
@@ -59,7 +59,7 @@ GPU
     └── Special Function Units (SFU)
 ```
 
----
+
 
 ## 2. Compilation & Setup
 
@@ -130,14 +130,14 @@ target_compile_options(program PRIVATE
 #include <cuda/atomic>          // C++20-style atomics (libcu++)
 ```
 
----
+
 
 ## 3. Kernel Basics
 
 ### Function Qualifiers
 
 | Qualifier | Callable From | Executes On |
-|-----------|--------------|-------------|
+|--|--|-|
 | `__global__` | Host (or device w/ Dynamic Parallelism) | Device |
 | `__device__` | Device only | Device |
 | `__host__` | Host only | Host |
@@ -186,14 +186,14 @@ __device__ int globalCounter;     // Device global variable
 __managed__ int sharedVar;        // Unified/managed variable
 ```
 
----
+
 
 ## 4. Thread Hierarchy & Indexing
 
 ### Built-in Variables
 
 | Variable | Type | Description |
-|----------|------|-------------|
+|-||-|
 | `threadIdx` | `dim3` | Thread index within block (x, y, z) |
 | `blockIdx` | `dim3` | Block index within grid (x, y, z) |
 | `blockDim` | `dim3` | Dimensions of each block |
@@ -228,7 +228,7 @@ for (int i = blockIdx.x * blockDim.x + threadIdx.x;
 ### Limits per Compute Capability
 
 | Resource | Limit |
-|----------|-------|
+|-|-|
 | Max threads per block | 1024 |
 | Max block dimensions | 1024 × 1024 × 64 |
 | Max grid dimensions X | 2³¹ - 1 |
@@ -238,12 +238,12 @@ for (int i = blockIdx.x * blockDim.x + threadIdx.x;
 | Shared memory per SM | 48–164 KB (configurable) |
 | Registers per SM | 65536 |
 
----
+
 
 ## 5. Memory Hierarchy
 
 | Type | Scope | Lifetime | Speed | Size |
-|------|-------|----------|-------|------|
+||-|-|-||
 | **Register** | Thread | Kernel | ~1 cycle | ~256 KB/SM |
 | **Shared Memory** | Block | Kernel | ~5 cycles | 48–164 KB/SM |
 | **L1 Cache** | SM | Automatic | ~5 cycles | Part of shared mem pool |
@@ -337,7 +337,7 @@ cudaCreateTextureObject(&texObj, &resDesc, &texDesc, nullptr);
 cudaDestroyTextureObject(texObj);
 ```
 
----
+
 
 ## 6. Memory Management APIs
 
@@ -414,7 +414,7 @@ p.kind = cudaMemcpyHostToDevice;
 cudaMemcpy3D(&p);
 ```
 
----
+
 
 ## 7. Unified Memory
 
@@ -449,7 +449,7 @@ cudaMemAdvise(data, size, cudaMemAdviseSetPreferredLocation, device);
 cudaMemAdvise(data, size, cudaMemAdviseSetAccessedBy, device);
 ```
 
----
+
 
 ## 8. Synchronization
 
@@ -482,7 +482,7 @@ __threadfence_block();    // Ensure visible to threads in same block
 __threadfence_system();   // Ensure visible to CPU and all GPU threads (Unified Memory)
 ```
 
----
+
 
 ## 9. Streams & Concurrency
 
@@ -570,7 +570,7 @@ cudaGraphExecDestroy(graphExec);
 cudaGraphDestroy(graph);
 ```
 
----
+
 
 ## 10. Events & Timing
 
@@ -601,7 +601,7 @@ cudaEventCreateWithFlags(&event, cudaEventBlockingSync);
 cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
 ```
 
----
+
 
 ## 11. Atomic Operations
 
@@ -652,7 +652,7 @@ __device__ void push(Node* node) {
 }
 ```
 
----
+
 
 ## 12. Warp-Level Primitives
 
@@ -710,7 +710,7 @@ __device__ float blockReduceSum(float val) {
 }
 ```
 
----
+
 
 ## 13. Dynamic Parallelism
 
@@ -736,7 +736,7 @@ __global__ void parentKernel(float* data, int n) {
 nvcc -arch=sm_86 -rdc=true -o program program.cu
 ```
 
----
+
 
 ## 14. Cooperative Groups
 
@@ -766,7 +766,7 @@ void* args[] = { &data, &N };
 cudaLaunchCooperativeKernel((void*)kernel, grid, block, args, sharedMem, stream);
 ```
 
----
+
 
 ## 15. CUDA Libraries
 
@@ -873,7 +873,7 @@ cudaMalloc(&d_temp, tempBytes);
 cub::DeviceRadixSort::SortKeys(d_temp, tempBytes, d_keys_in, d_keys_out, N);
 ```
 
----
+
 
 ## 16. Error Handling
 
@@ -904,7 +904,7 @@ CUDA_CHECK(cudaDeviceSynchronize());  // Catches runtime kernel errors
 ### Common Error Codes
 
 | Code | Name | Meaning |
-|------|------|---------|
+||||
 | 0 | `cudaSuccess` | No error |
 | 1 | `cudaErrorInvalidValue` | Invalid argument |
 | 2 | `cudaErrorMemoryAllocation` | cudaMalloc failed (OOM) |
@@ -936,7 +936,7 @@ printf("Peak TFLOPS: %.1f\n",
        * prop.clockRate / 1e9);
 ```
 
----
+
 
 ## 17. Profiling: Nsight & nvprof
 
@@ -1071,7 +1071,7 @@ cudaProfilerStop();
 ### Key Profiling Metrics Explained
 
 | Metric | Ideal | Meaning |
-|--------|-------|---------|
+|--|-||
 | **SM Efficiency** | >80% | % of time at least one warp is active |
 | **Achieved Occupancy** | depends | Active warps / max possible warps |
 | **Global Load Efficiency** | 100% | Useful bytes / total bytes loaded |
@@ -1082,7 +1082,7 @@ cudaProfilerStop();
 | **L1/L2 Hit Rate** | high | Cache effectiveness |
 | **DRAM Utilization** | high for BW-bound | % peak memory bandwidth used |
 
----
+
 
 ## 18. NVIDIA System Management (nvidia-smi)
 
@@ -1285,7 +1285,7 @@ export CUDA_CACHE_PATH=/tmp/cuda_cache
 export CUDA_LAUNCH_BLOCKING=1           # Serialize all kernel launches (debug only!)
 ```
 
----
+
 
 ## 19. Performance Optimization Checklist
 
@@ -1330,12 +1330,12 @@ export CUDA_LAUNCH_BLOCKING=1           # Serialize all kernel launches (debug o
 - [ ] Compile with `-arch=native` or target arch to get best code generation
 - [ ] Ensure no false dependencies (separate read/write arrays where possible)
 
----
+
 
 ## 20. Compute Capability Reference
 
 | Architecture | CC | Example GPUs | Key Features |
-|---|---|---|---|
+|||||
 | Kepler | 3.0–3.7 | K80, K40 | Dynamic Parallelism (3.5+), Hyper-Q |
 | Maxwell | 5.0–5.3 | GTX 750 Ti, GTX 970 | Improved shared mem, unified L1 |
 | Pascal | 6.0–6.2 | P100, GTX 1080 | NVLink, FP16, Unified Memory improvements |
@@ -1366,7 +1366,7 @@ __global__ void wmmaKernel(half* A, half* B, float* C) {
 }
 ```
 
----
+
 
 ## Quick Reference Card
 
@@ -1397,7 +1397,7 @@ nvidia-smi:     nvidia-smi -l 2          (monitor every 2s)
 
 > **Covers:** CUDA C/C++ Programming, Memory Management, Synchronization, Streams, Profiling, NVIDIA System Tools, and Best Practices
 
----
+
 
 ## Table of Contents
 
@@ -1422,12 +1422,12 @@ nvidia-smi:     nvidia-smi -l 2          (monitor every 2s)
 19. [Performance Optimization Checklist](#19-performance-optimization-checklist)
 20. [Compute Capability Reference](#20-compute-capability-reference)
 
----
+
 
 ## 1. GPU Architecture Concepts
 
 | Term | Description |
-|------|-------------|
+||-|
 | **SM (Streaming Multiprocessor)** | Core compute unit; each GPU has many SMs |
 | **CUDA Core** | Scalar FP32/INT32 execution unit inside an SM |
 | **Tensor Core** | Matrix multiply unit (FP16/BF16/INT8); present since Volta (CC 7.0) |
@@ -1454,7 +1454,7 @@ GPU
     └── Special Function Units (SFU)
 ```
 
----
+
 
 ## 2. Compilation & Setup
 
@@ -1525,14 +1525,14 @@ target_compile_options(program PRIVATE
 #include <cuda/atomic>          // C++20-style atomics (libcu++)
 ```
 
----
+
 
 ## 3. Kernel Basics
 
 ### Function Qualifiers
 
 | Qualifier | Callable From | Executes On |
-|-----------|--------------|-------------|
+|--|--|-|
 | `__global__` | Host (or device w/ Dynamic Parallelism) | Device |
 | `__device__` | Device only | Device |
 | `__host__` | Host only | Host |
@@ -1581,14 +1581,14 @@ __device__ int globalCounter;     // Device global variable
 __managed__ int sharedVar;        // Unified/managed variable
 ```
 
----
+
 
 ## 4. Thread Hierarchy & Indexing
 
 ### Built-in Variables
 
 | Variable | Type | Description |
-|----------|------|-------------|
+|-||-|
 | `threadIdx` | `dim3` | Thread index within block (x, y, z) |
 | `blockIdx` | `dim3` | Block index within grid (x, y, z) |
 | `blockDim` | `dim3` | Dimensions of each block |
@@ -1623,7 +1623,7 @@ for (int i = blockIdx.x * blockDim.x + threadIdx.x;
 ### Limits per Compute Capability
 
 | Resource | Limit |
-|----------|-------|
+|-|-|
 | Max threads per block | 1024 |
 | Max block dimensions | 1024 × 1024 × 64 |
 | Max grid dimensions X | 2³¹ - 1 |
@@ -1633,12 +1633,12 @@ for (int i = blockIdx.x * blockDim.x + threadIdx.x;
 | Shared memory per SM | 48–164 KB (configurable) |
 | Registers per SM | 65536 |
 
----
+
 
 ## 5. Memory Hierarchy
 
 | Type | Scope | Lifetime | Speed | Size |
-|------|-------|----------|-------|------|
+||-|-|-||
 | **Register** | Thread | Kernel | ~1 cycle | ~256 KB/SM |
 | **Shared Memory** | Block | Kernel | ~5 cycles | 48–164 KB/SM |
 | **L1 Cache** | SM | Automatic | ~5 cycles | Part of shared mem pool |
@@ -1732,7 +1732,7 @@ cudaCreateTextureObject(&texObj, &resDesc, &texDesc, nullptr);
 cudaDestroyTextureObject(texObj);
 ```
 
----
+
 
 ## 6. Memory Management APIs
 
@@ -1809,7 +1809,7 @@ p.kind = cudaMemcpyHostToDevice;
 cudaMemcpy3D(&p);
 ```
 
----
+
 
 ## 7. Unified Memory
 
@@ -1844,7 +1844,7 @@ cudaMemAdvise(data, size, cudaMemAdviseSetPreferredLocation, device);
 cudaMemAdvise(data, size, cudaMemAdviseSetAccessedBy, device);
 ```
 
----
+
 
 ## 8. Synchronization
 
@@ -1877,7 +1877,7 @@ __threadfence_block();    // Ensure visible to threads in same block
 __threadfence_system();   // Ensure visible to CPU and all GPU threads (Unified Memory)
 ```
 
----
+
 
 ## 9. Streams & Concurrency
 
@@ -1965,7 +1965,7 @@ cudaGraphExecDestroy(graphExec);
 cudaGraphDestroy(graph);
 ```
 
----
+
 
 ## 10. Events & Timing
 
@@ -1996,7 +1996,7 @@ cudaEventCreateWithFlags(&event, cudaEventBlockingSync);
 cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
 ```
 
----
+
 
 ## 11. Atomic Operations
 
@@ -2047,7 +2047,7 @@ __device__ void push(Node* node) {
 }
 ```
 
----
+
 
 ## 12. Warp-Level Primitives
 
@@ -2105,7 +2105,7 @@ __device__ float blockReduceSum(float val) {
 }
 ```
 
----
+
 
 ## 13. Dynamic Parallelism
 
@@ -2131,7 +2131,7 @@ __global__ void parentKernel(float* data, int n) {
 nvcc -arch=sm_86 -rdc=true -o program program.cu
 ```
 
----
+
 
 ## 14. Cooperative Groups
 
@@ -2161,7 +2161,7 @@ void* args[] = { &data, &N };
 cudaLaunchCooperativeKernel((void*)kernel, grid, block, args, sharedMem, stream);
 ```
 
----
+
 
 ## 15. CUDA Libraries
 
@@ -2268,7 +2268,7 @@ cudaMalloc(&d_temp, tempBytes);
 cub::DeviceRadixSort::SortKeys(d_temp, tempBytes, d_keys_in, d_keys_out, N);
 ```
 
----
+
 
 ## 16. Error Handling
 
@@ -2299,7 +2299,7 @@ CUDA_CHECK(cudaDeviceSynchronize());  // Catches runtime kernel errors
 ### Common Error Codes
 
 | Code | Name | Meaning |
-|------|------|---------|
+||||
 | 0 | `cudaSuccess` | No error |
 | 1 | `cudaErrorInvalidValue` | Invalid argument |
 | 2 | `cudaErrorMemoryAllocation` | cudaMalloc failed (OOM) |
@@ -2331,7 +2331,7 @@ printf("Peak TFLOPS: %.1f\n",
        * prop.clockRate / 1e9);
 ```
 
----
+
 
 ## 17. Profiling: Nsight & nvprof
 
@@ -2466,7 +2466,7 @@ cudaProfilerStop();
 ### Key Profiling Metrics Explained
 
 | Metric | Ideal | Meaning |
-|--------|-------|---------|
+|--|-||
 | **SM Efficiency** | >80% | % of time at least one warp is active |
 | **Achieved Occupancy** | depends | Active warps / max possible warps |
 | **Global Load Efficiency** | 100% | Useful bytes / total bytes loaded |
@@ -2477,7 +2477,7 @@ cudaProfilerStop();
 | **L1/L2 Hit Rate** | high | Cache effectiveness |
 | **DRAM Utilization** | high for BW-bound | % peak memory bandwidth used |
 
----
+
 
 ## 18. NVIDIA System Management (nvidia-smi)
 
@@ -2680,7 +2680,7 @@ export CUDA_CACHE_PATH=/tmp/cuda_cache
 export CUDA_LAUNCH_BLOCKING=1           # Serialize all kernel launches (debug only!)
 ```
 
----
+
 
 ## 19. Performance Optimization Checklist
 
@@ -2725,12 +2725,12 @@ export CUDA_LAUNCH_BLOCKING=1           # Serialize all kernel launches (debug o
 - [ ] Compile with `-arch=native` or target arch to get best code generation
 - [ ] Ensure no false dependencies (separate read/write arrays where possible)
 
----
+
 
 ## 20. Compute Capability Reference
 
 | Architecture | CC | Example GPUs | Key Features |
-|---|---|---|---|
+|||||
 | Kepler | 3.0–3.7 | K80, K40 | Dynamic Parallelism (3.5+), Hyper-Q |
 | Maxwell | 5.0–5.3 | GTX 750 Ti, GTX 970 | Improved shared mem, unified L1 |
 | Pascal | 6.0–6.2 | P100, GTX 1080 | NVLink, FP16, Unified Memory improvements |
@@ -2761,7 +2761,7 @@ __global__ void wmmaKernel(half* A, half* B, float* C) {
 }
 ```
 
----
+
 
 ## Quick Reference Card
 
@@ -2793,13 +2793,13 @@ ncu:            ncu --set full -o report ./program
 nsys:           nsys profile --stats=true -o report ./program
 ```
 
----
+
 
 *Generated for CUDA 12.x / Driver 550+. Always check the [CUDA Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/) for the latest details.*
 ncu:            ncu --set full -o report ./program
 nsys:           nsys profile --stats=true -o report ./program
 ```
 
----
+
 
 *Generated for CUDA 12.x / Driver 550+. Always check the [CUDA Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/) for the latest details.*
