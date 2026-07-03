@@ -218,21 +218,16 @@ Effective params: 47B total; active: ~13B per token. Similar throughput to 13B d
 
 ## Efficient Attention Variants
 
-### Flash Attention (1 and 2)
-Tiles Q, K, V; computes attention block by block using shared memory (SRAM) to avoid writing full N×N attention matrix to HBM.
-- Memory: O(N) instead of O(N^2)
-- Speed: 2-4x faster wall-clock for same FLOP count
-- Enables training on longer sequences
-
-### Flash Attention 2
-Improved parallelism: parallelize over sequence length (not just batch/heads). 2x speedup over Flash Attention 1.
-
 ### Multi-Query Attention (MQA)
 All query heads share single K/V. Faster decoding; smaller KV cache. Minor quality degradation.
 
 ### ALiBi (Attention with Linear Biases)
 Add a linear bias to attention scores based on relative position: score = Q*K^T - m * |i-j|.
 No positional embeddings needed. Extrapolates to longer sequences than seen in training.
+
+---
+
+> **See also:** [14_Distributed_Training_and_Inference.md](14_Distributed_Training_and_Inference.md) for Flash Attention (v1/v2), which provides O(N) memory and 2-4x speedup for attention computation.
 
 ---
 

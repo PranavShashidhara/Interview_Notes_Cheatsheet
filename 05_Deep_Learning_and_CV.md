@@ -232,10 +232,8 @@ if ||grad|| > clip_value: grad = grad * clip_value / ||grad||
 
 Essential for RNNs and LLM training.
 
-### Mixed Precision Training (FP16/BF16)
-- Forward/backward in FP16; maintain master copy in FP32
-- 2x memory reduction; faster on modern GPUs (Tensor Cores)
-- Loss scaling prevents FP16 underflow
+### Mixed Precision Training
+See [14_Distributed_Training_and_Inference.md](14_Distributed_Training_and_Inference.md) for detailed coverage of FP16/BF16 training, loss scaling, and precision trade-offs.
 
 ### Data Augmentation (CV)
 Random flip, rotation, crop, color jitter, cutout, mixup, CutMix. Increases effective dataset size; improves generalization.

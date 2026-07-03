@@ -16,31 +16,7 @@ Autoregressive generation: predict next token given all previous tokens.
 
 ---
 
-## Transformer Architecture (Foundation)
-
-### Self-Attention
-Q = X * W_Q, K = X * W_K, V = X * W_V
-
-Attention(Q, K, V) = softmax(Q*K^T / sqrt(d_k)) * V
-
-- Q*K^T: compatibility between queries and keys
-- sqrt(d_k): scaling to prevent softmax saturation in high dimensions
-- Result: weighted sum of values based on attention scores
-
-### Multi-Head Attention
-Split into h heads, each with dimension d_k = d_model / h. Compute attention independently per head, concatenate, project.
-
-Allows attending to different aspects/positions simultaneously.
-
-### Feed-Forward Network
-FFN(x) = max(0, x*W_1 + b_1)*W_2 + b_2
-
-Applied position-wise (independently to each token). Typically 4x expansion.
-
-### Positional Encoding
-Sinusoidal (original): PE(pos, 2i) = sin(pos/10000^(2i/d_model))
-RoPE (Rotary PE): rotates Q and K by position-dependent angle; used in LLaMA, GPT-NeoX.
-ALiBi: adds position bias directly to attention scores; generalizes to longer sequences.
+> **See also:** [13_Transformers_and_Architectures.md](13_Transformers_and_Architectures.md) for detailed coverage of transformer architecture, self-attention, positional encoding (RoPE, ALiBi, sinusoidal), and model variants.
 
 ---
 
@@ -248,6 +224,161 @@ Fallback logic based on connectivity detection.
 
 ---
 
+> **See also:** [07_RAG_and_Embeddings.md](07_RAG_and_Embeddings.md) for comprehensive coverage of RAG pipelines, chunking strategies, embedding models, vector databases, hybrid retrieval, re-ranking, embeddings (Word2Vec, GloVe, SBERT, CLIP, contrastive learning), and advanced RAG techniques.
+
+---
+
+## LLM Architecture Variants
+
+### Encoder-Only (BERT-style)
+Bidirectional attention; [CLS] token for classification; MLM pre-training.
+Best for: classification, NER, semantic similarity, extractive QA.
+
+### Decoder-Only (GPT-style)
+Causal (left-to-right) attention; CLM pre-training.
+Best for: text generation, instruction following, agentic tasks.
+Examples: GPT-4, LLaMA, Claude, Mistral.
+
+### Encoder-Decoder (T5/BART-style)
+Encoder: bidirectional; Decoder: causal with cross-attention to encoder.
+Best for: translation, summarization, seq2seq tasks.
+Examples: T5, BART, mT5.
+
+### Mixture of Experts (MoE)
+Replace dense FFN with N expert FFNs; router selects top-k experts per token.
+- Only k of N experts activated per token → sparse computation
+- Same parameter count as dense model but lower FLOPS per forward pass
+- **Load balancing loss**: auxiliary loss to prevent all tokens routing to same expert
+- Examples: Mixtral 8x7B, GPT-4 (rumored), Gemini 1.5
+- Challenge: all experts must fit in memory; load imbalance
+
+### State Space Models (SSMs) / Mamba
+Alternative to attention for sequence modeling.
+- **S4/Mamba**: structured state space; O(N) inference vs O(N^2) attention
+- Mamba: selective SSM; input-dependent state update (unlike RNN with fixed dynamics)
+- Better than transformers on very long sequences; no explicit attention matrix
+- Hybrid: Mamba + attention layers (Jamba by AI21)
+
+### GQA (Grouped Query Attention) and MQA
+- **MQA (Multi-Query Attention)**: all heads share single K,V; faster inference, less memory for KV cache
+- **GQA (Grouped Query Attention)**: groups of heads share K,V; balance between MHA and MQA
+- Used in: LLaMA3, Mistral, Gemma
+
+---
+
+---
+
+> **See also:** [14_Distributed_Training_and_Inference.md](14_Distributed_Training_and_Inference.md) for KV cache, Flash Attention, speculative decoding, continuous batching, PagedAttention (vLLM), and distributed inference optimization.
+
+---
+
+## Hallucination and Grounding
+
+### Types of Hallucinations
+- **Factual hallucination**: states incorrect facts with confidence (names, dates, citations)
+- **Faithfulness hallucination**: summary/answer contradicts source document
+- **Intrinsic**: contradicts source; **Extrinsic**: adds info not in source
+
+### Why Hallucinations Happen
+- LLM learns to produce plausible-sounding text, not verified facts
+- Knowledge encoded in weights may be outdated or incorrect
+- Model may interpolate/extrapolate incorrectly from training patterns
+- Decoding at high temperature increases hallucination rate
+
+### Mitigation Strategies
+- **RAG**: ground generation in retrieved documents; ask model to cite sources
+- **Chain-of-thought**: explicit reasoning steps expose errors
+- **Self-consistency**: sample multiple outputs, take majority vote
+- **Fact-checking prompts**: "Only state facts you are certain of"
+- **Guardrails**: NLI-based entailment check (does output follow from context?)
+- **Low temperature**: reduces randomness but doesn't eliminate hallucination
+
+### Grounding Evaluation
+- **ROUGE-L / BERTScore** against source docs
+- **NLI entailment score**: classify (premise=context, hypothesis=generated claim) as entail/neutral/contradict
+- **FActScoring**: decompose into atomic facts, verify each independently
+
+---
+
+## Constitutional AI and RLAIF
+
+### Constitutional AI (Anthropic)
+Reduce reliance on human labelers for harmful content detection.
+1. **SL-CAI**: model critiques and revises its own responses using a "constitution" (list of principles)
+2. **RL-CAI**: train reward model using AI-generated preference data (not human), then PPO
+
+### RLAIF (Reinforcement Learning from AI Feedback)
+Replace human raters with LLM-generated preference labels.
+- LLM-judge rates output pairs → preference dataset → reward model → PPO
+- Scales better than RLHF; quality depends on judge model capability
+- Risk: reward model inherits judge's biases
+
+### Constitutional Principles Examples
+- "Choose the response that is least likely to contain harmful content"
+- "Choose the response that is most helpful and honest"
+Applied at critique + revision stage and at preference labeling stage.
+
+---
+
+## Multimodal LLMs
+
+### Vision-Language Models (VLMs)
+Combine vision encoder + language model:
+- **CLIP-based**: encode image with CLIP ViT, project to LLM token space (LLaVA, InstructBLIP)
+- **Native multimodal**: interleaved image+text tokens from scratch (Flamingo, Gemini)
+
+### LLaVA Architecture
+1. ViT (Vision Transformer) encodes image → patch embeddings
+2. MLP projection maps visual embeddings to LLM input space
+3. LLM (LLaMA/Mistral) processes interleaved text+image tokens
+
+### CLIP (Contrastive Language-Image Pretraining)
+- Dual encoder: image encoder (ViT) + text encoder (Transformer)
+- Trained on 400M (image, text) pairs with InfoNCE contrastive loss
+- Zero-shot classification: embed image, embed class names, find nearest class
+
+### Audio / Speech Models
+- **Whisper**: encoder-decoder transformer for ASR; trained on 680K hours
+- **VALL-E**: TTS via audio codec tokens; voice cloning from 3-second sample
+- **GPT-4o**: native audio input/output; end-to-end without intermediate ASR
+
+### Key Challenges in Multimodal
+- Modality alignment: map visual/audio features to text token space
+- Hallucination worsens with image input (model invents image details)
+- Long video: thousands of frames exceed context window
+
+---
+
+> **See also:** [14_Distributed_Training_and_Inference.md](14_Distributed_Training_and_Inference.md) for data/tensor/pipeline parallelism, ZeRO optimization, mixed precision training, gradient checkpointing, and distributed training libraries.
+
+---
+
+## Context Length Handling
+
+### Positional Encoding for Long Context
+- **RoPE + YaRN**: extend RoPE to longer contexts by adjusting rotation frequencies; LLaMA uses this
+- **ALiBi**: linear position bias; generalizes to longer sequences than seen in training without fine-tuning
+- **NTK-aware scaling**: scale base of RoPE to interpolate positions
+
+### Sliding Window Attention (Mistral)
+Each token attends to only last W tokens (window size). Rolling buffer KV cache.
+- Efficient O(N·W) attention; may miss very long-range dependencies
+- Combined with full attention on some layers for global context
+
+### Context Compression
+- **LLMLingua**: remove tokens the LLM can predict easily; compress prompt by 3-20x
+- **RAG instead of long-context**: retrieve relevant chunks rather than loading entire document
+- **Summary memory**: summarize old context, append summary + recent turns
+
+### Lost in the Middle Problem
+LLMs perform worse on information in the middle of long contexts than at the start or end. Mitigation: put important info at beginning or end; re-rank retrieved chunks accordingly.
+
+---
+
+> **See also:** [14_Distributed_Training_and_Inference.md](14_Distributed_Training_and_Inference.md) for Flash Attention and the quadratic bottleneck in attention computation.
+
+---
+
 ## Interview Key Points
 
 - **Why does temperature affect creativity?** Higher T flattens softmax → equal probability tokens → more diverse sampling
@@ -256,3 +387,11 @@ Fallback logic based on connectivity detection.
 - **What is context window?** Max tokens the model can attend to at once; LLaMA3: 8K, Claude 3.5: 200K; limited by quadratic attention cost
 - **How does instruction tuning differ from pre-training?** Pre-training: predict next token on massive corpus; instruction tuning: supervised on (instruction, good response) pairs to align behavior
 - **What is flash attention?** Fused attention kernel that avoids materializing full NxN attention matrix; O(N) memory instead of O(N^2); enables longer context
+- **Why use hybrid retrieval over dense-only?** BM25 handles exact keyword matches better; dense handles semantic similarity; together they cover more failure modes
+- **What's the difference between bi-encoder and cross-encoder?** Bi-encoder: encode query and doc independently (fast, scalable); cross-encoder: concatenate and score jointly (accurate, slow); use bi-encoder to retrieve, cross-encoder to rerank
+- **Why does MoE use less compute despite more parameters?** Only top-k experts activate per token; rest are skipped; total FLOPs = k/N × dense equivalent
+- **What is the KV cache and why does it matter?** Stores K,V tensors for past tokens so they don't need recomputation each autoregressive step; crucial for inference efficiency; memory grows linearly with sequence length
+- **Hallucination vs factual error?** Hallucination specifically means model generates plausible-sounding but false info; factual errors are a subset; hallucination also includes faithfulness failures (contradicts source)
+- **What is speculative decoding?** Draft model proposes K tokens; target model verifies in one pass; lossless 2-3x speedup; requires draft/target model alignment
+- **RAG vs fine-tuning: when to use each?** RAG: knowledge is external/dynamic/large; need citations; fine-tuning: task format/style/behavior change; domain-specific phrasing; not for injecting new facts
+- **What is GQA and why does it help?** Groups of query heads share K,V heads; reduces KV cache memory proportionally; speeds inference without large quality loss vs full MHA

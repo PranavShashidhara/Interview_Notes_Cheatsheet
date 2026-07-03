@@ -248,6 +248,13 @@ Compiles model to optimized GPU kernel. Supports quantization (INT8, FP16). Laye
 ### ONNX Runtime (Your MLOps Project)
 Cross-platform inference. Supports multiple execution providers: CUDA, TensorRT, OpenVINO, CPU. Graph optimizations: operator fusion, constant folding.
 
+### Speculative Decoding
+Use small draft model to propose K tokens; large model verifies all in one forward pass.
+- Accept tokens where large model agrees; reject and resample on first disagreement
+- Lossless (same distribution as target model); 2-3x speedup in practice
+- Requires aligned draft+target model pair
+- Particularly useful for latency-sensitive applications
+
 ---
 
 ## Communication Backends
