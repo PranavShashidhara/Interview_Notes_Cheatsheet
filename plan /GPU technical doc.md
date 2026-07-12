@@ -1,134 +1,46 @@
-# GPU Performance / Systems Engineering Roadmap — Full Context Document
+# GPU Roadmap — Weekly Action Plan
 
-**Purpose of this document:** consolidated roadmap + technical implementation reference for an 8-week GPU/systems engineering portfolio build, intended to be fed as context to an LLM for future planning, drafting, or troubleshooting sessions.
+## Resume grouping (3 projects total)
 
-**Person:** Pranav Shashidhara — MS Data Science (UMD, May 2026, GPA 3.97), ~4 yrs experience (3 yrs Technical Analyst at Oracle Bangalore — ETL/PL-SQL/APEX; ~1 yr ML Engineer at UMD MTech Ventures — agentic AI systems). On F-1 OPT, actively job searching, self-imposed December 2026 checkpoint (return to India if no US offer by then).
-
-**Goal:** build a credible, verifiable GPU performance / ML systems portfolio to target feeder-tier roles now (Google GPU Perf, Sarvam AI training infra) with a realistic 2027–2028 path to staff-tier labs (Anthropic, OpenAI, Baseten).
-
----
-
-## 1. Existing assets (before this plan starts)
-
-**`cuda-memory-hierarchy-benchmarks`** (public repo, Jetson Orin Nano sm_87):
-- Full kernel ladder: naive → tiled v1 (32×32 shared mem) → tiled v2 (WPT=4, 8×8 register tile) → tiled v3 (cp.async + WPT=4) → TC WMMA (fp16) → cuBLAS/CUTLASS ceilings
-- Key results (2048×2048): naive 171 GFLOPS → tiled v2 968 GFLOPS (5.65× — register blocking, biggest fp32 win) → WMMA 1,777 GFLOPS (10.4×, still memory-bound) vs CUTLASS fp16 TC 7,023 GFLOPS (WMMA sits at ~25% of this ceiling — the key gap to close)
-- Roofline analysis via Nsight Compute: hand-written kernels are memory-bound; library fp32 (cuBLAS/CUTLASS) crosses the ridge point into compute-bound; fp16 TC kernels return to memory-bound because sm_87's ~40 TOPS roofline outruns available bandwidth
-- Memory bandwidth microbenchmarks: sequential vs strided vs random access patterns, cp.async pipelining
-
-**`parallelism-ladder`** (public repo):
-- Distributed fine-tuning progression: DDP → FSDP → Pipeline Parallel → Tensor Parallel on Qwen2.5-3B
-- NCCL instrumentation already present
-
-**LLM Orchestration Platform (LOP):**
-- Llama-3.1 8B fine-tuned via QLoRA (4-bit), vLLM inference with adapter merging, KV-cache optimization, NVFP4 quantization exposure
-
-**News Research Agent, MediAssist AI, Toxicity Classification:** separate agentic/applied-AI portfolio track — not part of this GPU roadmap, no overlap, kept on a different resume variant.
-
-**Diagnostic note on communication style:** technical depth is real; occasional gap is *vocabulary mapping* — e.g., not initially recognizing "register blocking" as the canonical name for already-implemented WPT=4 tiling. Fix: explicitly map every implemented technique to its textbook name + one-line result before interviews.
+- **Project 1: CUDA/Tensor Core Kernel Suite** — Weeks 1, 3, 4, 5, part of 8
+- **Project 2: Compiler & Runtime Integration** — Weeks 6, 7, part of 8
+- **Project 3: Distributed Training Communication Analysis** — Week 2 (folds into existing `parallelism-ladder`)
 
 ---
 
-## 2. Target roles and honest calibration
+## PROJECT 1: CUDA/Tensor Core Kernel Suite
 
-| Target | Tier | Comp (where known) | Calibration |
-|---|---|---|---|
-| Google, SWE GPU Performance (Sunnyvale) | Apply now | $147K–211K + 15% bonus + equity | Meets all minimum quals today; 3/4 preferred quals met; referral path via Nanda (existing, slow-moving — needs specific req to unstick) |
-| Sarvam AI, ML Engineer Training Infra (Bengaluru) | Apply now (after Weeks 1–7 artifacts) | Unverified — treat ₹84 LPA anecdote as unreliable; realistic early-career estimate ~₹25–45 LPA + equity, confirm directly with recruiter | Explicit "exceptional early-career" exception path stated in JD |
-| Baseten, GPU Kernel Engineer (SF) | Long-horizon (2027–28) | $180K–360K | Specialist role, 4-month-old req w/ low applicant count (scarcity signal), but expects near-veteran kernel depth |
-| Anthropic, GPU Performance Engineer | Long-horizon (2027–28) | $280K–850K | Staff-level bar ("thousands of GPUs," "production ML systems at scale"); portfolio work cannot close the production-scale gap |
-| OpenAI, Inference — AMD GPU Enablement (SF) | Long-horizon (2027–28) | $295K–555K | Role *type* (systems integration, bring-up/debug) fits well; AMD/HIP arbitrage noted but deliberately skipped in current plan; scale gap unclosed |
-
-**Core strategic finding:** projects substitute for experience most effectively when (a) objectively verifiable by a stranger in minutes, and (b) the skill is scarce enough that companies can't insist on veteran experience. GPU kernel work satisfies both better than almost any other engineering specialty — a GEMM at X% of cuBLAS is a fact, not a claim. This is why the project-heavy strategy is viable here specifically, more than it would be for e.g. generic "AI engineer" roles.
-
-**Sequencing logic:** feeder tier now → production-scale experience 2027–2028 → staff-tier labs become realistic, likely via a warm path from sustained public OSS/kernel presence rather than a cold application.
-
----
-
-## 3. Standing rules (run throughout all 8 weeks)
-
-- Apply to live reqs immediately, not after prep — prep runs in parallel with active applications, not before them
-- Google application + Nanda referral ping (with specific req link) — highest-priority open action, not yet completed as of this document
-- DS&A: 4–5 hrs/week throughout, medium difficulty, arrays/graphs/DP rotation — Google's loop tests this regardless of GPU depth
-- Any real interview/phone screen preempts the build schedule entirely
-- Something public ships (commit, README update, chart) every Friday
-- Repos stay separate and individually legible: `cuda-memory-hierarchy-benchmarks`, `triton-kernel-comparison` (new), `parallelism-ladder` — not consolidated into one monorepo
-- HIP/AMD thread deliberately excluded from this version of the plan (was scoped, then dropped by request — CUDA-only focus retained)
-
----
-
-## 4. Week-by-week plan with technical implementation
-
-### Week 1 — Low-Precision: INT8 Quantized GEMM
-
-**Goal:** per-channel quantized INT8 GEMM with fused dequant epilogue, benchmarked against existing fp16/fp32 kernels.
+### Week 1 — INT8 Quantized GEMM
 
 **Quantization scheme:**
 ```
-scale[j] = max(abs(W[:, j])) / 127          # per-output-channel, symmetric
-W_int8[i,j] = round(W[i,j] / scale[j])       # clamp to [-127, 127]
+scale[j] = max(abs(W[:, j])) / 127
+W_int8[i,j] = round(W[i,j] / scale[j])
 output_fp16 = int32_accumulator * scale_row * scale_col   # fused in-kernel
 ```
 
-**Core intrinsic:** `__dp4a(int, int, int)` — 4-way INT8 dot product, INT32 accumulate, native on sm_61+ (works on both Jetson sm_87 and A100 sm_80). Stretch: INT8 tensor core path via `wmma::experimental::precision::s8` fragments.
+**Core intrinsic:** `__dp4a(int, int, int)` — 4-way INT8 dot product, INT32 accumulate (sm_61+, works on Jetson).
 
-**Validation:** correctness harness before kernel work — max abs error, mean relative error, cosine similarity vs fp16 reference. Build this first, use it to validate every subsequent kernel this week.
+**Steps:**
+1. Build correctness harness first: max abs error, mean relative error, cosine similarity vs fp16 reference
+2. Naive INT8 kernel — correctness oracle
+3. `dp4a` tiled INT8 kernel (reuse existing tiling skeleton)
+4. Fused dequant epilogue in-kernel
+5. Benchmark sweep 512→4096 vs existing fp16 WMMA / fp32 tiled kernels
+6. Chart: throughput gain vs accuracy loss
+7. Profile: `ncu --set full -o int8_gemm_report ./int8_gemm_bench`
 
-**Profiling:**
-```bash
-ncu --set full -o int8_gemm_report ./int8_gemm_bench
-ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,dram__throughput.avg.pct_of_peak_sustained_elapsed ./int8_gemm_bench
-```
-
-**Deliverable:** benchmark sweep 512→4096, tradeoff chart (throughput gain vs accuracy loss), extend `plot_results.py` with `int8_gemm` as recognized variant, README section linking to NVFP4/vLLM serving work in LOP.
-
-**Resume bullet:** *Built INT8 GEMM with per-channel scaling and fused dequantization epilogue (dp4a); Xx throughput over fp16 at <Y% accuracy delta*
-
----
-
-### Week 2 — Distributed Systems: NCCL / Comms Characterization
-
-**Goal:** extract and deepen a communication-characterization section inside the existing `parallelism-ladder` repo.
-
-**Stack:** `torch.distributed` (backend=`nccl`), `NCCL_DEBUG=INFO`, `torch.profiler`.
-
-**Instrumentation:**
-```python
-import torch.distributed as dist
-from torch.profiler import profile, ProfilerActivity
-
-with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-prof.export_chrome_trace("nccl_trace.json")
-```
-
-**Message-size sweep:** loop tensor sizes 1KB→1GB (powers of 2), time with `torch.cuda.Event`, plot effective bandwidth vs message size — reveals latency-bound → bandwidth-bound crossover point.
-
-**Overlap analysis via Nsight Systems:**
-```bash
-nsys profile -o fsdp_trace --trace=cuda,nvtx,osrt python train_step.py
-nsys stats fsdp_trace.nsys-rep
-```
-Use `torch.cuda.nvtx.range_push/pop` around compute sections to visually separate compute vs comms on the timeline. Compute "% exposed comms" = comms time not overlapping compute / total comms time.
-
-**Deliverable:** cross-strategy table (DDP/FSDP/PP/TP — dominant collective type, exposed comms %, bottleneck location), new README section "Communication Characterization."
-
-**Resume bullet:** *Characterized NCCL collective performance and compute/communication overlap across DDP/FSDP/TP configurations; identified communication-bound regimes via Nsight Systems timeline analysis*
+**Output:** README section + chart + extended `plot_results.py` with `int8_gemm` variant.
 
 ---
 
-### Weeks 3–4 — Fused Attention Kernel (Flash-Attention-style)
+### Week 3 — Fused Attention: Correctness + Online Softmax
 
-**Goal:** online-softmax fused attention kernel, Q/K/V tiled, causal masking, benchmarked vs naive and PyTorch SDPA.
-
-**Reference/correctness oracle:**
-```python
-ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
-```
-
-**Kernel structure:** grid = one block per (batch, head, query-tile); shared memory holds K/V tile (`Bc × head_dim`); registers hold running max `m_i`, running sum `l_i`, output accumulator.
-
-**Online softmax algorithm (memorize this — standard whiteboard interview question):**
+**Steps:**
+1. Naive 3-kernel baseline: S=QKᵀ → softmax(S) → S·V, fp32, global memory — reference oracle
+2. Fused two-pass version: tile K/V through shared memory, two passes over K
+3. Validate vs `torch.nn.functional.scaled_dot_product_attention`, `atol=1e-3`
+4. Implement online softmax (single pass):
 ```
 for each K/V tile j:
     S_ij = Q_i @ K_j^T * scale
@@ -139,17 +51,24 @@ for each K/V tile j:
     m_i, l_i = m_new, l_new
 output = acc / l_i
 ```
+5. Write the derivation into README as you implement it
 
-**Causal optimization:** skip any K/V tile where `tile_start > query_row` entirely — don't load it, free speedup, quantify separately.
+**Output:** working single-pass fused attention kernel, fp32, validated.
 
-**Validation:** `torch.testing.assert_close(output, ref, atol=1e-3, rtol=1e-3)`.
+---
 
-**Benchmark matrix:** seq lengths 512/1K/2K/4K/8K, head dims 64/128, vs naive 3-kernel baseline and PyTorch SDPA. Headline charts: latency vs seq length, peak memory vs seq length (O(N²) vs O(N), "naive OOMs at 8K, mine doesn't" table).
+### Week 4 — Fused Attention: fp16, Causal, Benchmarks, Custom Op
 
-**PyTorch custom op wrapper (build once, reuse for all future kernels):**
+**Steps:**
+1. Convert to fp16 compute / fp32 accumulate
+2. Add causal masking — skip fully-masked K/V tiles entirely
+3. Tile-size sweep (Br×Bc), document shared-memory-capacity vs occupancy tradeoff
+4. Benchmark grid: seq lengths 512/1K/2K/4K/8K, head dims 64/128, vs naive and SDPA
+5. Charts: latency vs seq length, peak memory vs seq length (O(N²) vs O(N)); "naive OOMs at 8K, mine doesn't" table
+6. Nsight Compute pass: quantify memory traffic reduction vs naive
+7. Wrap as PyTorch custom op:
 ```python
 from torch.library import Library, impl
-
 mylib = Library("mylib", "DEF")
 mylib.define("fused_attention(Tensor q, Tensor k, Tensor v, bool causal) -> Tensor")
 
@@ -159,23 +78,22 @@ def fused_attention_cuda(q, k, v, causal):
 
 @impl(mylib, "fused_attention", "Meta")
 def fused_attention_meta(q, k, v, causal):
-    return torch.empty_like(q)   # shape-only, enables tracing/compile
+    return torch.empty_like(q)
 ```
 
-**Resume bullet:** *Implemented Flash-Attention-style fused kernel with online softmax and tiled Q/K/V: Xx speedup over naive at 4K context, O(N) memory scaling validated to 8K where naive OOMs*
+**Output:** complete fused attention kernel with benchmarks, charts, custom op wrapper.
 
 ---
 
-### Week 5 — WMMA Multistage Pipeline (close CUTLASS gap: current ~25% → target 50%+)
+### Week 5 — WMMA Multistage Pipeline
 
-**Goal:** software-pipeline the existing WMMA GEMM kernel to close the gap against CUTLASS fp16 TC (1,777 vs 7,023 GFLOPS currently).
+**Goal:** close gap between current WMMA kernel (~25% of CUTLASS fp16) and target 50%+.
 
-**Key primitives:**
-- `nvcuda::wmma::fragment<...>` — tensor core fragment types
-- `cuda::memcpy_async` / `cp.async.cg.shared.global` (PTX) — async global→shared copy
-- `__pipeline_wait_prior<N>()` — wait for all but N most recent async copies
+**Key primitives:** `nvcuda::wmma::fragment<...>`, `cuda::memcpy_async` / `cp.async.cg.shared.global`, `__pipeline_wait_prior<N>()`.
 
-**Pipeline skeleton:**
+**Steps:**
+1. Read CUTLASS's `include/cutlass/gemm/threadblock/mma_multistage.h` for the pattern
+2. Implement staged loading:
 ```cuda
 constexpr int STAGES = 4;
 for (int s = 0; s < STAGES - 1; s++) {
@@ -194,29 +112,41 @@ for (int tile = 0; tile < num_tiles; tile++) {
     __syncthreads();
 }
 ```
+3. Debug/tune — watch register pressure vs occupancy (budget slack, hardest week)
+4. Benchmark vs CUTLASS fp16 TC and original single-stage WMMA
+5. Profile: `ncu --metrics sm__warps_active.avg.pct_of_peak_sustained_active,sm__throughput.avg.pct_of_peak_sustained_elapsed`
+6. Document occupancy-vs-throughput tradeoff
 
-**Profiling focus:** occupancy vs single-stage version —
-```bash
-ncu --metrics sm__warps_active.avg.pct_of_peak_sustained_active,sm__throughput.avg.pct_of_peak_sustained_elapsed ./wmma_pipelined_bench
-```
-Expect occupancy to drop while throughput rises — this divergence is the key finding (more registers/thread for pipeline state → fewer resident warps → but each thread has more ILP to hide latency).
-
-**Reference (read, don't copy):** CUTLASS `include/cutlass/gemm/threadblock/mma_multistage.h`.
-
-**Fallback:** if target not hit, document the gap analysis honestly as "future work" in README — still a credible artifact.
-
-**Resume bullet:** *Optimized fp16 Tensor Core GEMM from 25% to X% of CUTLASS via multistage software pipelining (double-buffered cp.async, staged fragment loads)*
+**Fallback:** if 50% not hit, document gap analysis honestly as "future work."
 
 ---
 
-### Weeks 6–7 — Triton Ports + PTX Analysis + OSS Contribution (vLLM)
+### Week 8 (part 1) — A100 Cross-Architecture Validation
 
-**Setup:** `pip install triton --break-system-packages`
+**Steps:**
+1. Rent A100 (Lambda/RunPod), confirm setup:
+```bash
+nvidia-smi
+nvcc --version
+python -c "import torch; print(torch.cuda.get_device_capability())"  # expect (8,0)
+```
+2. Re-run full kernel suite on sm_80: original ladder + INT8 + attention + pipelined WMMA
+3. Fill cross-architecture table (Jetson sm_87 vs A100 sm_80 GFLOPS + regime per kernel)
+4. Write cross-architecture findings — where do roofline regimes flip?
 
-**Triton GEMM (autotuned):**
+**Project 1 resume bullet:** *Built and optimized a CUDA kernel suite spanning register-tiled/Tensor Core GEMM, INT8 quantization with fused dequant, and Flash-Attention-style fused attention; validated across Jetson (sm_87) and A100 (sm_80), closing the Tensor Core gap from 25% to X% of CUTLASS via multistage pipelining*
+
+---
+
+## PROJECT 2: Compiler & Runtime Integration
+
+### Week 6 — Triton Ports + PTX Extraction
+
+**Steps:**
+1. `pip install triton --break-system-packages`
+2. Work through Triton matmul + fused-softmax tutorials
+3. Port GEMM to Triton with autotuning:
 ```python
-import triton, triton.language as tl
-
 @triton.autotune(
     configs=[
         triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
@@ -225,64 +155,49 @@ import triton, triton.language as tl
     key=['M', 'N', 'K'],
 )
 @triton.jit
-def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, ...):
-    ...
+def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, ...): ...
 ```
-`num_stages` is directly comparable to the hand-written pipeline depth from Week 5 — this is the bridge for the compiler-vs-hand-tuned comparison writeup.
+4. Benchmark: your CUDA vs your Triton vs cuBLAS, plus lines-of-code comparison
+5. Port fused attention to Triton — compare against `triton-lang/triton/python/tutorials/06-fused-attention.py`
+6. Start watching vLLM issue queue (`good first issue` + kernel/quant/benchmark-adjacent)
 
-**PTX extraction — Triton side:**
+**Output:** Triton GEMM + attention repos, benchmarked.
+
+---
+
+### Week 7 — PTX Analysis + vLLM PR
+
+**Steps:**
+1. Extract Triton PTX:
 ```python
 kernel = matmul_kernel.warmup(*args, grid=grid)
-print(kernel.asm['ptx'])   # or kernel.asm['ttgir'] for Triton's own IR
+print(kernel.asm['ptx'])
 ```
-
-**PTX/SASS extraction — CUDA side:**
+2. Extract your CUDA PTX/SASS:
 ```bash
 nvcc -ptx your_kernel.cu -o your_kernel.ptx
 cuobjdump --dump-sass your_kernel.o > your_kernel.sass
 ```
-
-**Fused attention in Triton:** adapt from `triton-lang/triton/python/tutorials/06-fused-attention.py` — understand it, reimplement independently, then compare (don't copy verbatim).
-
-**Analysis deliverable:** 3–4 concrete findings on pipelining depth, register allocation, and where the compiler's autotuner wins/loses vs manual scheduling.
-
-**vLLM OSS contribution workflow:**
+3. Write up 3-4 concrete findings: pipelining depth, register allocation, where Triton's autotuner wins/loses vs hand-scheduling
+4. vLLM PR:
 ```bash
 git clone https://github.com/vllm-project/vllm && cd vllm
 pip install -e . --break-system-packages
 ```
-- Filter issues: `good first issue` label + kernel/quantization/benchmark-adjacent
-- Comment proposed approach on the issue before writing code
-- Keep first PR scope small: shape edge-case, test gap, benchmark script, docs fix — not a new kernel
-- Run relevant tests locally before opening PR: `pytest tests/kernels/ -k your_area`
-- Install `pre-commit` to match their CI lint requirements
-- Review cycles run 1–3 weeks; let it ride into Week 8 if needed
+   - Comment your approach on a `good first issue` before writing code
+   - Keep scope small: shape edge-case, test gap, benchmark script, docs fix
+   - Run relevant tests: `pytest tests/kernels/ -k your_area`
+   - Install `pre-commit` to match CI lint
+   - Let review ride into Week 8 if needed
 
-**Resume bullets:**
-- *Ported hand-pipelined CUDA kernels to Triton; analyzed generated PTX to characterize compiler autotuning vs manual scheduling tradeoffs*
-- *Contributor to vLLM — [PR one-liner]* (once merged; keep "open PR" off resume, fair game in conversation)
+**Output:** PTX comparison writeup, vLLM PR opened.
 
 ---
 
-### Week 8 — A100 Validation + PyTorch Custom Ops + torch.compile
+### Week 8 (part 2) — Custom Ops + torch.compile
 
-**Rental setup:**
-```bash
-nvidia-smi                          # confirm A100
-nvcc --version                      # confirm CUDA toolkit
-python -c "import torch; print(torch.cuda.get_device_capability())"  # expect (8,0)
-```
-
-**Re-run scope:** full ladder + Week 1 INT8 + Weeks 3–4 attention + Week 5 pipelined WMMA, all on sm_80.
-
-**Cross-architecture table (fill in during Week 8):**
-| Kernel | Jetson sm_87 GFLOPS | A100 sm_80 GFLOPS | Regime (Jetson) | Regime (A100) |
-|---|---|---|---|---|
-| Tiled v2 (reg tile) | 968 | ? | Memory-bound | ? |
-| WMMA (single-stage) | 1,777 | ? | Memory-bound | ? |
-| WMMA (pipelined) | ? | ? | ? | ? |
-
-**Custom op build:**
+**Steps:**
+1. Package best kernels as PyTorch custom ops:
 ```python
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 setup(
@@ -290,62 +205,50 @@ setup(
     cmdclass={'build_ext': BuildExtension}
 )
 ```
-
-**torch.compile integration:**
+2. Test under torch.compile, check for graph breaks:
 ```python
 @torch.compile
 def model_forward(x, w):
     return torch.ops.mylib.wmma_gemm(x, w)
-
-torch._dynamo.explain(model_forward)(x, w)   # check for graph breaks
+torch._dynamo.explain(model_forward)(x, w)
 ```
+3. Benchmark vs Inductor-generated code (`torch.compile(..., mode="max-autotune")`)
+4. Consolidate READMEs; draft 90-second spoken narrative per project
 
-**Compare vs Inductor:**
+**Project 2 resume bullet:** *Ported hand-tuned CUDA kernels to Triton and PyTorch custom operators, analyzing generated PTX against hand-scheduled code and benchmarking under torch.compile; contributed a merged fix to vLLM*
+
+---
+
+## PROJECT 3: Distributed Training Communication Analysis
+
+### Week 2 — NCCL / Comms Characterization
+
+**Steps:**
+1. Add NCCL profiling hooks to `parallelism-ladder` using `torch.profiler`:
 ```python
-compiled_baseline = torch.compile(lambda a, b: a @ b, mode="max-autotune")
-# benchmark compiled_baseline vs torch.ops.mylib.wmma_gemm on identical inputs
+from torch.profiler import profile, ProfilerActivity
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+prof.export_chrome_trace("nccl_trace.json")
 ```
+2. Sweep message sizes 1KB→1GB, time with `torch.cuda.Event`, plot effective bandwidth vs message size
+3. Nsight Systems trace of an FSDP/TP training step:
+```bash
+nsys profile -o fsdp_trace --trace=cuda,nvtx,osrt python train_step.py
+```
+4. Add `torch.cuda.nvtx.range_push/pop` around compute sections to separate compute vs comms on timeline
+5. Compute "% exposed comms" per parallelism strategy
+6. Build cross-strategy table: DDP/FSDP/PP/TP — dominant collective, exposed comms %, bottleneck
 
-**Final deliverables:** consolidated README across all repos, 90-second spoken narrative per project (interview prep), cross-architecture writeup.
+**Output:** new "Communication Characterization" section in `parallelism-ladder` README.
 
-**Resume bullet:** *Packaged custom CUDA kernels as PyTorch operators (torch.library, autograd, meta kernels); benchmarked against Inductor-generated code under torch.compile*
-
----
-
-## 5. JD coverage matrix (Google / Anthropic / OpenAI / Sarvam composite)
-
-| Skill area | Covered by | Status |
-|---|---|---|
-| CUDA kernels, tensor cores | Existing suite + Week 5 | Strong |
-| Flash Attention / attention optimization | Weeks 3–4 | New |
-| Triton | Weeks 6–7 | New |
-| PTX / compiler / codegen exposure | Week 7 | New |
-| Nsight profiling (Compute + Systems) | Existing suite + Week 2 | Strong |
-| Kernel fusion / memory bandwidth optimization | Existing suite (reframed) | Strong |
-| INT8/FP8, mixed precision | Week 1 + existing NVFP4 serving (LOP) | New + existing |
-| NCCL, collectives, model parallelism | Week 2 + parallelism-ladder | Existing, deepened |
-| PyTorch internals, custom operators | Week 8 | New |
-| OSS contribution (training-infra ecosystem) | Weeks 6–7 (vLLM) | New |
-| torch.compile / XLA | Week 8 (partial — Inductor comparison only) | Partial |
-| HIP/AMD, RCCL | — | Deliberately excluded from this plan |
-| Production / large-cluster scale | — | Not coverable by solo projects — feeder-role gap |
+**Project 3 resume bullet:** *Profiled NCCL collective performance and compute/communication overlap across DDP/FSDP/TP configurations, identifying communication-bound regimes via Nsight Systems*
 
 ---
 
-## 6. Reference material (read during relevant weeks, don't copy)
+## Standing rules (every week)
 
-- CUTLASS docs — `docs/efficient_gemm.md`, `include/cutlass/gemm/threadblock/mma_multistage.h`
-- Triton official tutorials — `triton-lang/triton/python/tutorials/` (matmul, fused-softmax, fused-attention)
-- "Flash Attention" and "Flash Attention 2" papers — online softmax derivation, IO-complexity analysis
-- NVIDIA "CUDA C++ Best Practices Guide" and Tensor Core programming docs
-- vLLM `CONTRIBUTING.md` and kernels directory structure
-
----
-
-## 7. Open threads / unresolved as of last discussion
-
-- Nanda referral ping + Google application: **not yet sent** — top-priority open action, independent of project timeline
-- Sarvam compensation: unverified from public sources; do not anchor expectations, confirm directly with recruiter if/when in process
-- Whether to formally add Sarvam to active warm-path outreach now vs. wait for Week 1–7 artifacts to exist first: undecided
-- WMMA multistage pipeline (Week 5) is higher-risk/effort than other weeks — budget slack, has an explicit "document as future work" fallback
-- Compression/cut order if an interview lands mid-plan: Week 8 comms analysis first (parallelism-ladder already has partial evidence), then Week 5 WMMA pipeline second; Weeks 1–4 and 6–7 are considered non-negotiable core
+- DS&A: 4-5 hrs/week
+- Any interview preempts this schedule
+- Something public ships every Friday
+- Repos stay separate: `cuda-memory-hierarchy-benchmarks` (Project 1), `triton-kernel-comparison` (Project 2), `parallelism-ladder` (Project 3)
