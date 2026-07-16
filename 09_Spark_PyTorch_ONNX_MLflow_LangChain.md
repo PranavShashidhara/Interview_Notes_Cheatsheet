@@ -403,6 +403,108 @@ AutoGen provides similar multi-agent coordination. LangGraph is more explicit gr
 
 ---
 
+## Distributed PyTorch Training
+
+### DataParallel (DP) vs DistributedDataParallel (DDP)
+- **DP**: single-process, multi-GPU. Replicates model on each GPU, gathers gradients on GPU:0. **Bottleneck**: GPU:0 does all gradient aggregation.
+- **DDP**: multi-process (one per GPU). Each process has full model copy. Uses NCCL **all-reduce** for gradient sync. **Preferred** — near-linear scaling.
+
+### DDP Code Pattern
+```python
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group("nccl")
+model = DDP(model.to(local_rank), device_ids=[local_rank])
+# Training loop is the same — DDP handles gradient sync automatically
+```
+
+### FSDP (Fully Sharded Data Parallel)
+- Shards model parameters, gradients, and optimizer states across GPUs (like ZeRO-3)
+- Each GPU only stores a shard → can train models that don't fit on single GPU
+- Use when model > single GPU memory. DDP when model fits.
+
+### Gradient Accumulation
+```python
+for i, batch in enumerate(dataloader):
+    loss = model(batch) / accumulation_steps
+    loss.backward()
+    if (i + 1) % accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+Simulates larger batch sizes without more GPU memory.
+
+---
+
+## LLM Fine-tuning Methods
+
+### LoRA (Low-Rank Adaptation)
+- Freeze base model weights. Add low-rank matrices A (d×r) and B (r×d) to attention layers.
+- `W' = W + BA`. Only train A and B (r << d, typically r=8-64).
+- Reduces trainable params by ~99%. Merges into base weights at inference (no latency cost).
+
+### QLoRA
+- Quantize base model to 4-bit (NF4 format) + apply LoRA adapters in FP16
+- Train 65B models on single 48GB GPU
+- Uses double quantization and paged optimizers to save memory
+
+### When to Fine-tune vs RAG
+| Scenario | Fine-tune | RAG |
+|---|---|---|
+| Teach new knowledge | Risky (hallucination) | Preferred |
+| Change style/format | Preferred | Limited |
+| Domain adaptation | LoRA/QLoRA | Good enough |
+| Frequently updated info | Impractical | Preferred |
+| Low latency required | Preferred | Adds retrieval latency |
+
+### PEFT with HuggingFace
+```python
+from peft import LoraConfig, get_peft_model
+config = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj", "v_proj"],
+                    lora_dropout=0.05, task_type="CAUSAL_LM")
+model = get_peft_model(base_model, config)
+model.print_trainable_parameters()  # ~0.1% of total
+```
+
+---
+
+## Model Optimization for Production
+
+### Quantization
+- **Post-Training Quantization (PTQ)**: quantize after training. Fast but quality drops for aggressive quantization.
+- **Quantization-Aware Training (QAT)**: simulate quantization during training. Better quality, slower.
+- **GPTQ**: gradient-based, layer-by-layer quantization for LLMs. Good for INT4.
+- **AWQ**: activation-aware — preserves salient weight channels. Often better than GPTQ.
+- **bitsandbytes**: INT8/INT4 on-the-fly quantization in PyTorch. Easy: `model = AutoModelForCausalLM.from_pretrained(..., load_in_4bit=True)`
+
+### torch.compile
+```python
+model = torch.compile(model)  # TorchDynamo + TorchInductor
+# Captures Python code into graph → optimizes → generates fused CUDA kernels
+# 1.5-3× speedup for free on many models
+```
+
+### vLLM for LLM Serving
+- **PagedAttention**: manages KV cache like OS virtual memory — allocates non-contiguous blocks, avoids memory waste
+- **Continuous batching**: dynamically adds/removes requests as they complete (vs static batching)
+- 2-24× higher throughput than naive HuggingFace serving
+
+### Hyperparameter Optimization
+```python
+import optuna
+def objective(trial):
+    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
+    n_layers = trial.suggest_int("n_layers", 1, 5)
+    # ... train model, return validation metric
+    return val_loss
+
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=100)
+```
+
+---
+
 ## Interview Key Points
 
 **Spark**

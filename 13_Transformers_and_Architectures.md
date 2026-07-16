@@ -231,11 +231,119 @@ No positional embeddings needed. Extrapolates to longer sequences than seen in t
 
 ---
 
+## Flash Attention
+
+### Why Standard Attention is Memory-Bound
+- Standard attention materializes the full N×N attention matrix in HBM (GPU main memory)
+- HBM bandwidth is the bottleneck, not compute — attention is **memory-bound**
+- For sequence length 2048, the attention matrix is 2048² × 4 bytes = 16MB per head per layer
+
+### FlashAttention Algorithm
+- **Key idea**: tile the Q, K, V matrices into blocks that fit in SRAM (on-chip memory, ~20MB on A100)
+- Compute attention **block-by-block** without ever materializing the full N×N matrix
+- Uses **online softmax** trick (log-sum-exp accumulation) to compute exact attention incrementally
+- **Memory**: O(N) instead of O(N²) — only stores output, not the attention matrix
+- **Speed**: 2-4× faster on A100 despite same O(N²d) FLOPs — because SRAM access is 10-100× faster than HBM
+
+### FlashAttention v2 Improvements
+- Better work partitioning across GPU thread blocks and warps
+- Reduces non-matmul FLOPs (softmax, masking)
+- ~2× faster than FlashAttention v1
+
+### Interview tip
+"Why is FlashAttention faster if it has the same O(N²) complexity?" → It reduces HBM reads/writes from O(N²) to O(N²/M) where M is SRAM size. The bottleneck is memory bandwidth, not compute.
+
+---
+
+## Sparse and Efficient Attention
+
+### Longformer
+- **Local attention**: sliding window of fixed size (e.g., 512 tokens)
+- **Global attention**: selected tokens (e.g., [CLS]) attend to all positions
+- Complexity: O(n × w) where w = window size. Supports sequences up to 16K+.
+
+### BigBird
+- Combines random + sliding window + global token attention
+- Provably Turing-complete (unlike some sparse attention variants)
+
+### Linear Attention (Performers)
+- Approximate softmax attention with kernel trick: `Attention ≈ φ(Q) · (φ(K)ᵀ · V)`
+- O(n·d²) instead of O(n²·d). Fast but accuracy can degrade.
+
+### RetNet
+- Combines attention-like quality with RNN-like O(1) inference per token
+- Three computation modes: parallel (training), recurrent (inference), chunkwise (long sequences)
+
+### RWKV
+- RNN-like architecture with transformer-level quality
+- O(1) memory per token during inference (vs O(n) for KV cache)
+- No attention matrix — uses time-decay weighted accumulation
+
+---
+
+## Complexity Comparison
+
+| Method | Time | Space | Notes |
+|---|---|---|---|
+| Standard Attention | O(n²d) | O(n²) | Full attention matrix in HBM |
+| Flash Attention | O(n²d) | **O(n)** | Same FLOPs, much less memory |
+| Longformer | O(n·w·d) | O(n·w) | w = window size |
+| Linear Attention | O(n·d²) | O(d²) | Approximate, may lose quality |
+| MoE FFN | O(n·d²·k/E) | O(d²·E) | k experts active out of E total |
+
+---
+
+## Architectural Design Choices
+
+### Pre-LN vs Post-LN
+- **Post-LN** (original transformer): `x + LayerNorm(Sublayer(x))`. Needs careful warmup; training can be unstable.
+- **Pre-LN**: `x + Sublayer(LayerNorm(x))`. More stable training, no warmup needed. Used in GPT-2+, LLaMA.
+- Pre-LN produces more stable gradient norms across layers.
+
+### Why SwiGLU > ReLU FFN
+- Standard FFN: `FFN(x) = W₂ · ReLU(W₁ · x)`
+- SwiGLU: `FFN(x) = (W₁·x ⊙ Swish(V·x)) · W₂` — gating captures multiplicative feature interactions
+- ~1-2% better on benchmarks for same compute budget. Used in LLaMA, PaLM.
+
+### Why RMSNorm > LayerNorm
+- LayerNorm: center (subtract mean) + scale (divide by std)
+- RMSNorm: only scale (divide by RMS). Skip the centering step.
+- Empirically same quality, ~10% faster. Used in LLaMA, Mistral.
+
+### Tied Embeddings
+- Share weights between input embedding and output projection (lm_head)
+- Reduces parameters by vocab_size × d_model
+- Used in T5, some GPT variants. Modern large LLMs often untie for flexibility.
+
+---
+
+## Speculative Decoding
+
+### How It Works
+1. **Draft model** (small, fast) generates K candidate tokens autoregressively
+2. **Target model** (large, accurate) verifies all K tokens in a **single forward pass**
+3. Accept tokens from left until first rejection; resample rejected token from adjusted distribution
+4. **Lossless**: produces exact same distribution as target model alone
+
+### Why It's Faster
+- Target model forward pass for K tokens costs roughly the same as 1 token (parallel verification)
+- If draft model acceptance rate is ~70-80%, get ~2-3× speedup
+
+### Variants
+- **Medusa**: attach multiple prediction heads to the target model itself (no separate draft model)
+- **Eagle**: uses early-exit draft heads trained on the target model's features
+
+---
+
 ## Interview Key Points
 
 - **Why decoder-only for generation?** Causal masking allows autoregressive generation; encoder-decoder adds complexity without benefit for pure generation; one model handles both encoding and generation.
 - **Why is RoPE better than learned PE?** Encodes relative positions; extrapolates to longer sequences; no extra parameters; applied directly to Q and K.
-- **What is KV cache?** Cached K, V tensors for all past tokens during autoregressive generation. Avoids O(n^2) recomputation. GQA/MQA reduces cache memory.
+- **What is KV cache?** Cached K, V tensors for all past tokens during autoregressive generation. Avoids O(n²) recomputation. GQA/MQA reduces cache memory.
+- **Why is FlashAttention faster with same O(n²)?** Bottleneck is memory bandwidth. FlashAttention tiles computation to SRAM, reducing HBM reads by O(M) factor.
+- **How does RWKV achieve O(1) inference?** Uses recurrent formulation with time-decay weighting instead of attention. No KV cache growth.
+- **Why Pre-LN over Post-LN?** More stable gradients across layers. No careful warmup needed. Used in all modern LLMs.
+- **What is speculative decoding?** Small model drafts tokens, large model verifies in parallel. Lossless, 2-3× faster.
 - **Encoder vs Decoder attention difference?** Encoder: bidirectional (attend to all tokens); Decoder: causal (attend only to past tokens via mask).
 - **Why is MoE efficient?** Sparse activation: only 2 of 8 experts active per token. Total params large, active params small. Better quality per FLOP.
 - **How does BERT differ from GPT?** BERT: bidirectional encoder; MLM; better for understanding. GPT: causal decoder; CLM; better for generation. BERT cannot do autoregressive generation.

@@ -240,10 +240,114 @@ Random flip, rotation, crop, color jitter, cutout, mixup, CutMix. Increases effe
 
 ---
 
+## Loss Functions for Deep Learning
+
+### Classification Losses
+- **Binary Cross-Entropy**: `L = -[y·log(p) + (1-y)·log(1-p)]`. Pairs with sigmoid output.
+- **Categorical Cross-Entropy**: `L = -Σ y_c · log(p_c)`. Pairs with softmax. Gradient: `p_c - y_c` (elegant simplification).
+- **Focal Loss**: `L = -α(1-p)^γ · log(p)`. Down-weights easy examples. γ=2, α=0.25 typical. Introduced in RetinaNet for extreme class imbalance in object detection.
+
+### Contrastive / Self-Supervised Losses
+- **Contrastive Loss**: pull positive pairs together, push negative pairs apart. `L = y·d² + (1-y)·max(0, margin-d)²`
+- **Triplet Loss**: `L = max(0, d(anchor, positive) - d(anchor, negative) + margin)`. Needs hard negative mining.
+- **InfoNCE**: `L = -log[exp(sim(q,k+)/τ) / Σ exp(sim(q,k_i)/τ)]`. Used in SimCLR, CLIP, contrastive learning.
+
+### Segmentation Losses
+- **Dice Loss**: `L = 1 - 2|A∩B|/(|A|+|B|)`. Handles class imbalance well. Directly optimizes the Dice coefficient.
+- **IoU Loss**: similar to Dice but uses intersection/union.
+- **Combined**: Dice + BCE often works best in practice.
+
+### Regression Losses
+- **MSE (L2)**: `(y-ŷ)²`. Penalizes outliers heavily.
+- **MAE (L1)**: `|y-ŷ|`. Robust to outliers but not differentiable at 0.
+- **Huber Loss**: MSE for small errors, MAE for large. Best of both worlds.
+
+---
+
+## Object Detection
+
+### Two-Stage Detectors
+- **R-CNN → Fast R-CNN → Faster R-CNN**: evolution from selective search to learned region proposals
+- **Faster R-CNN**: Region Proposal Network (RPN) generates proposals → ROI Pooling → classification + bbox regression
+- **Key concepts**: anchor boxes (predefined aspect ratios), IoU threshold for positive/negative, NMS (Non-Maximum Suppression) to remove duplicate detections
+
+### One-Stage Detectors
+- **YOLO** (You Only Look Once): divide image into grid, predict bboxes + class probabilities directly. Fast but less accurate for small objects.
+- **SSD**: multi-scale feature maps for detecting objects at different sizes
+- **RetinaNet**: focal loss solves class imbalance in one-stage detectors → matches two-stage accuracy
+
+### Key Metrics
+- **mAP (mean Average Precision)**: compute AP (area under PR curve) for each class at IoU threshold, average across classes
+- **mAP@0.5**: IoU threshold = 0.5 (PASCAL VOC standard)
+- **mAP@[.5:.95]**: average over IoU thresholds from 0.5 to 0.95 (COCO standard, more strict)
+
+### Segmentation Types
+- **Semantic**: per-pixel class label (no instance distinction)
+- **Instance**: detect + segment each object instance separately
+- **Panoptic**: combines both — stuff (sky, road) + things (cars, people)
+
+---
+
+## Vision Transformers (ViT)
+
+### Architecture
+- Split image into fixed-size patches (e.g., 16×16)
+- Flatten patches → linear projection → patch embeddings
+- Prepend learnable [CLS] token, add positional embeddings
+- Feed through standard transformer encoder → [CLS] output for classification
+
+### ViT vs CNN
+| Aspect | ViT | CNN |
+|---|---|---|
+| Inductive bias | None (learns from data) | Translation equivariance, locality |
+| Data requirement | Needs large datasets (or pre-training) | Works well with small datasets |
+| Receptive field | Global from layer 1 | Grows with depth |
+| Scalability | Scales better with compute | Diminishing returns at scale |
+
+### Key Variants
+- **DeiT**: data-efficient ViT with distillation token
+- **Swin Transformer**: hierarchical ViT with shifted windows — O(n) instead of O(n²) attention. Good for dense prediction.
+- **DINO / DINOv2**: self-supervised ViT. Learns powerful features without labels. Strong for retrieval and segmentation.
+
+---
+
+## Self-Supervised Learning in CV
+
+### Contrastive Learning
+- **SimCLR**: augment image twice → encode both → maximize agreement (NT-Xent loss). Needs large batches and strong augmentation.
+- **MoCo**: momentum encoder maintains a queue of negative samples. Works with smaller batches.
+- **BYOL**: no negative pairs — uses momentum target network. Prevents collapse via asymmetric architecture.
+
+### Masked Image Modeling
+- **MAE (Masked Autoencoders)**: mask 75% of patches, reconstruct from visible 25%. Pre-train ViT for downstream tasks.
+
+### Why Self-Supervised Matters
+- Labeled data is expensive; unlabeled images are abundant
+- Pre-trained representations transfer well to downstream tasks
+- DINOv2 features rival supervised ImageNet features on many benchmarks
+
+---
+
+## Normalization Comparison
+
+| Method | Normalize Across | When to Use | Notes |
+|---|---|---|---|
+| **BatchNorm** | Batch dim, per feature | CNNs with large batches | Depends on batch statistics; issues with small batches |
+| **LayerNorm** | Feature dim, per sample | Transformers, RNNs | Batch-independent |
+| **GroupNorm** | Groups of channels, per sample | Small-batch CV (detection) | No batch dependence; good for object detection |
+| **InstanceNorm** | Spatial dims, per sample per channel | Style transfer | Removes style information |
+| **RMSNorm** | Feature dim (no centering) | Modern LLMs (LLaMA) | Faster than LayerNorm, same quality |
+
+---
+
 ## Interview Key Points
 
 - **Why does batch norm help?** Reduces internal covariate shift; stabilizes training; allows higher LR; gradient flows more easily.
 - **Difference between Conv and FC**: Conv shares weights spatially; translation equivariant; fewer parameters; FC is position-dependent.
 - **Why residual connections?** Gradient highway bypasses nonlinearities; enables very deep networks without degradation.
+- **Why 1×1 convolutions?** Channel-wise mixing, dimensionality reduction (bottleneck blocks), adds non-linearity cheaply.
+- **Dice vs cross-entropy for segmentation?** Dice directly optimizes overlap, handles imbalance; CE is smoother for gradient. Combine both.
+- **ViT vs CNN for small datasets?** CNN — ViT lacks inductive biases and needs large data or pre-training.
+- **Why focal loss?** Down-weights easy negatives in object detection. Without it, the vast majority of easy background examples dominate the loss.
 - **How does dropout work at inference?** Neurons are not dropped; outputs scaled by (1-p) or inverted dropout during training eliminates need for scaling at inference.
 - **When to use global average pooling vs flatten?** GAP is more regularized, fewer parameters, less prone to overfitting; flatten preserves spatial info but is large.

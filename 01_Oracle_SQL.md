@@ -356,6 +356,230 @@ WHEN NOT MATCHED THEN
 
 ---
 
+## Statistical SQL Functions
+
+```sql
+-- Median
+SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary) AS median_salary
+FROM employees;
+
+-- Standard deviation and variance
+SELECT department_id,
+       STDDEV_POP(salary) AS pop_stddev,
+       STDDEV_SAMP(salary) AS sample_stddev,
+       VARIANCE(salary) AS variance
+FROM employees GROUP BY department_id;
+
+-- Correlation and linear regression in SQL
+SELECT CORR(years_experience, salary) AS correlation,
+       REGR_SLOPE(salary, years_experience) AS slope,
+       REGR_INTERCEPT(salary, years_experience) AS intercept,
+       REGR_R2(salary, years_experience) AS r_squared
+FROM employees;
+
+-- Percentiles (IQR for outlier detection)
+SELECT department_id,
+       PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY salary) AS p25,
+       PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY salary) AS p75
+FROM employees GROUP BY department_id;
+```
+
+---
+
+## NULL Traps — Classic Interview Gotchas
+
+- **NOT IN with NULLs**: `WHERE id NOT IN (SELECT id FROM t)` returns **NO rows** if subquery contains any NULL. Use `NOT EXISTS` instead.
+- **COUNT(*) vs COUNT(col)**: `COUNT(*)` counts all rows; `COUNT(col)` skips NULLs. This changes results silently.
+- **Aggregations ignore NULLs**: `AVG(col)` ignores NULLs, so `AVG(10, NULL, 20)` = 15, not 10.
+- **NULL in CASE WHEN**: `CASE WHEN col = 'X'` does NOT match NULL. Use `CASE WHEN col IS NULL`.
+- **Three-valued logic**: `NULL = NULL` is NULL (not TRUE). Use `IS NULL` / `IS NOT NULL`.
+- **COALESCE vs NVL**: `COALESCE` is ANSI standard, short-circuits; `NVL` is Oracle-specific, evaluates both args.
+- **ORDER BY with NULLs**: NULLs sort last by default in Oracle (first in PostgreSQL). Use `NULLS FIRST` / `NULLS LAST`.
+- **JOIN with NULLs**: `NULL = NULL` in JOIN condition never matches. Use `NVL` or `COALESCE` to handle.
+
+---
+
+## Time-Series SQL Patterns
+
+### Sessionization (Identifying User Sessions)
+```sql
+-- Mark new session when gap > 30 minutes
+WITH activity AS (
+  SELECT user_id, event_time,
+         LAG(event_time) OVER (PARTITION BY user_id ORDER BY event_time) AS prev_time
+  FROM events
+),
+sessions AS (
+  SELECT user_id, event_time,
+         SUM(CASE WHEN event_time - prev_time > INTERVAL '30' MINUTE
+                   OR prev_time IS NULL THEN 1 ELSE 0 END)
+           OVER (PARTITION BY user_id ORDER BY event_time) AS session_id
+  FROM activity
+)
+SELECT user_id, session_id,
+       MIN(event_time) AS session_start,
+       MAX(event_time) AS session_end,
+       COUNT(*) AS events
+FROM sessions GROUP BY user_id, session_id;
+```
+
+### Consecutive Days (Gap-and-Island)
+```sql
+-- Find users active 3+ consecutive days
+WITH grouped AS (
+  SELECT user_id, activity_date,
+         activity_date - ROW_NUMBER() OVER (
+           PARTITION BY user_id ORDER BY activity_date
+         ) * INTERVAL '1' DAY AS grp
+  FROM daily_active_users
+)
+SELECT user_id,
+       MIN(activity_date) AS streak_start,
+       MAX(activity_date) AS streak_end,
+       COUNT(*) AS streak_length
+FROM grouped
+GROUP BY user_id, grp
+HAVING COUNT(*) >= 3;
+```
+
+### Rolling Aggregates
+```sql
+-- 7-day rolling average revenue
+SELECT order_date,
+       AVG(daily_revenue) OVER (
+         ORDER BY order_date
+         ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+       ) AS rolling_7d_avg
+FROM daily_revenue;
+```
+
+---
+
+## Funnel and Cohort Analysis
+
+### Conversion Funnel
+```sql
+SELECT
+  COUNT(DISTINCT CASE WHEN event = 'view' THEN user_id END) AS viewed,
+  COUNT(DISTINCT CASE WHEN event = 'add_to_cart' THEN user_id END) AS carted,
+  COUNT(DISTINCT CASE WHEN event = 'purchase' THEN user_id END) AS purchased,
+  ROUND(COUNT(DISTINCT CASE WHEN event = 'add_to_cart' THEN user_id END) * 100.0 /
+        NULLIF(COUNT(DISTINCT CASE WHEN event = 'view' THEN user_id END), 0), 1) AS view_to_cart_pct,
+  ROUND(COUNT(DISTINCT CASE WHEN event = 'purchase' THEN user_id END) * 100.0 /
+        NULLIF(COUNT(DISTINCT CASE WHEN event = 'add_to_cart' THEN user_id END), 0), 1) AS cart_to_purchase_pct
+FROM events
+WHERE event_date BETWEEN DATE '2024-01-01' AND DATE '2024-01-31';
+```
+
+### Retention Cohort Analysis
+```sql
+WITH cohorts AS (
+  SELECT user_id, TRUNC(signup_date, 'MM') AS cohort_month
+  FROM users
+),
+activity AS (
+  SELECT DISTINCT user_id, TRUNC(activity_date, 'MM') AS activity_month
+  FROM user_activity
+)
+SELECT c.cohort_month,
+       MONTHS_BETWEEN(a.activity_month, c.cohort_month) AS month_number,
+       COUNT(DISTINCT a.user_id) AS retained_users
+FROM cohorts c
+JOIN activity a ON c.user_id = a.user_id
+  AND a.activity_month >= c.cohort_month
+GROUP BY c.cohort_month, MONTHS_BETWEEN(a.activity_month, c.cohort_month)
+ORDER BY c.cohort_month, month_number;
+```
+
+### DAU / MAU Stickiness Ratio
+```sql
+SELECT activity_date,
+       COUNT(DISTINCT user_id) AS dau,
+       COUNT(DISTINCT user_id) OVER (
+         ORDER BY activity_date
+         RANGE BETWEEN INTERVAL '29' DAY PRECEDING AND CURRENT ROW
+       ) AS mau_approx
+FROM user_activity
+GROUP BY activity_date;
+```
+
+---
+
+## SQL ↔ Pandas Quick Reference
+
+| SQL | Pandas |
+|---|---|
+| `SELECT col1, col2 FROM t` | `df[['col1', 'col2']]` |
+| `WHERE col > 5` | `df[df['col'] > 5]` |
+| `GROUP BY col` | `df.groupby('col')` |
+| `ORDER BY col DESC` | `df.sort_values('col', ascending=False)` |
+| `JOIN t2 ON t1.id = t2.id` | `df1.merge(df2, on='id')` |
+| `LEFT JOIN` | `df1.merge(df2, on='id', how='left')` |
+| `COUNT(*), SUM(col) GROUP BY g` | `df.groupby('g').agg({'col': ['count', 'sum']})` |
+| `ROW_NUMBER() OVER (PARTITION BY g ORDER BY col)` | `df.groupby('g')['col'].rank(method='first')` |
+| `LAG(col) OVER (ORDER BY date)` | `df['col'].shift(1)` |
+| `HAVING COUNT(*) > 5` | `df.groupby('g').filter(lambda x: len(x) > 5)` |
+| `CASE WHEN ... THEN ... END` | `np.where(cond, val1, val2)` |
+| `PIVOT` | `df.pivot_table(values, index, columns)` |
+
+---
+
+## Dialect Portability Notes
+
+| Feature | Oracle | ANSI/PostgreSQL | BigQuery/Snowflake |
+|---|---|---|---|
+| Row limiting | `ROWNUM <= N` or `FETCH FIRST N ROWS ONLY` (12c+) | `LIMIT N` | `LIMIT N` |
+| NULL handling | `NVL(a, b)` | `COALESCE(a, b)` | `IFNULL(a, b)` / `COALESCE` |
+| String concat | `\|\|` or `CONCAT` | `\|\|` | `CONCAT` |
+| Hierarchical | `CONNECT BY` / `START WITH` | Recursive CTE | Recursive CTE |
+| Date diff | `date1 - date2` (returns days) | `DATE_PART('day', date1 - date2)` | `DATE_DIFF(d1, d2, DAY)` |
+| Array unnest | N/A (use `TABLE()`) | `UNNEST(array_col)` | `UNNEST(array_col)` |
+| Approx distinct | `APPROX_COUNT_DISTINCT` (12.1.0.2+) | N/A | `APPROX_COUNT_DISTINCT` |
+
+---
+
+## Interview Walkthrough Problems
+
+### Problem 1: Second Highest Salary per Department
+```sql
+WITH ranked AS (
+  SELECT department_id, employee_name, salary,
+         DENSE_RANK() OVER (PARTITION BY department_id ORDER BY salary DESC) AS rnk
+  FROM employees
+)
+SELECT department_id, employee_name, salary
+FROM ranked WHERE rnk = 2;
+```
+*Why DENSE_RANK over ROW_NUMBER?* — handles ties. If two employees share the highest salary, the second-highest is the next distinct value.
+
+### Problem 2: Users Active 3 Consecutive Days
+See the Gap-and-Island pattern above — this is one of the most frequently asked SQL problems at Meta, Airbnb, and Lyft.
+
+### Problem 3: 7-Day Rolling Retention
+```sql
+SELECT TRUNC(u.signup_date, 'IW') AS signup_week,
+       COUNT(DISTINCT u.user_id) AS signups,
+       COUNT(DISTINCT a.user_id) AS retained,
+       ROUND(COUNT(DISTINCT a.user_id) * 100.0 /
+             NULLIF(COUNT(DISTINCT u.user_id), 0), 1) AS retention_pct
+FROM users u
+LEFT JOIN user_activity a ON u.user_id = a.user_id
+  AND a.activity_date BETWEEN u.signup_date + 1 AND u.signup_date + 7
+GROUP BY TRUNC(u.signup_date, 'IW');
+```
+
+### Problem 4: Running Total with Monthly Reset
+```sql
+SELECT order_date, revenue,
+       SUM(revenue) OVER (
+         PARTITION BY TRUNC(order_date, 'MM')
+         ORDER BY order_date
+       ) AS mtd_revenue
+FROM orders;
+```
+
+---
+
 ## Key Interview Points
 
 - **WITH vs subquery**: CTE improves readability; Oracle can materialize it (once) or inline it; use `/*+ MATERIALIZE */` or `/*+ INLINE */` hints to control

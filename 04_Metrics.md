@@ -250,6 +250,129 @@ Combines faithfulness, answer relevance, context precision, context recall into 
 
 ---
 
+## Metric Selection Decision Framework
+
+### When to Optimize What
+| Scenario | Recommended Metric | Reasoning |
+|---|---|---|
+| FP cost >> FN cost (spam, content moderation) | **Precision**, PR-AUC | False positives = annoyed users, censored content |
+| FN cost >> FP cost (disease screening, fraud) | **Recall**, Sensitivity | Missing a positive case is dangerous/costly |
+| Both matter equally, balanced classes | **F1 Score**, Accuracy | Harmonic mean balances both |
+| Imbalanced classes (1:100+) | **PR-AUC**, MCC, F1 | ROC-AUC misleading with heavy imbalance |
+| Ranking quality (search, recommendations) | **NDCG**, MAP | Position-weighted relevance |
+| Probability estimates (bidding, risk) | **Log Loss**, Brier Score | Penalizes confident wrong predictions |
+| Regression with outliers | **MAE**, Huber Loss | MAE robust; MSE amplifies outliers |
+| Business cares about relative error | **MAPE**, sMAPE | Percentage-based, intuitive for stakeholders |
+
+### Business Metric ↔ ML Metric Mapping
+| Business KPI | Proxy ML Metric | Caveat |
+|---|---|---|
+| Revenue / Conversion | CTR accuracy, Log Loss | Calibration matters more than discrimination |
+| User engagement | NDCG, Recall@K | Offline NDCG may not reflect online engagement |
+| Customer satisfaction | Precision | Users notice bad recs more than missing good ones |
+| Churn reduction | Recall | Need good calibration for intervention prioritization |
+| Fraud losses ($) | Recall + cost-sensitive threshold | Threshold depends on investigation capacity |
+
+### Interview tip
+"How would you choose a metric?" → Start from the **business cost of errors**, not the ML algorithm. Ask: "What happens when the model is wrong? Which type of error is more expensive?"
+
+---
+
+## Calibration Metrics
+
+### Brier Score
+- `BS = (1/n) · Σ(f_i - o_i)²` where f = predicted probability, o = actual outcome (0/1)
+- Range: 0 (perfect) to 1 (worst). **Proper scoring rule.**
+- Decomposes into: BS = Reliability - Resolution + Uncertainty
+- Advantage over log loss: bounded, less sensitive to extreme probabilities
+
+### Expected Calibration Error (ECE)
+- Bin predictions into M equal-width bins
+- `ECE = Σ (n_b / N) · |accuracy_b - confidence_b|`
+- Common choice: M = 10 or 15 bins
+
+### Reliability Diagram
+- X-axis: mean predicted probability per bin
+- Y-axis: actual fraction of positives per bin
+- Perfect calibration: points lie on the diagonal
+- Above diagonal: underconfident. Below diagonal: overconfident.
+
+### When Calibration Matters
+- Medical diagnosis (treatment decisions based on predicted risk)
+- Financial modeling (pricing, portfolio risk)
+- LLM confidence ("how sure is the model?")
+- Any setting where predicted probabilities drive downstream decisions
+
+---
+
+## Offline vs Online Metric Alignment
+
+### The Core Problem
+- A model that improves offline NDCG may **not** improve online CTR/revenue
+- Causes: position bias in logged data, selection bias, distribution shift, delayed feedback
+
+### Position Bias
+- Items shown in top positions get more clicks regardless of relevance
+- Naive training on click data learns position → clicks, not relevance → clicks
+- **Fix**: inverse propensity scoring (IPS), position-debiased models
+
+### Inverse Propensity Scoring (IPS)
+- Weight each observation by 1/P(observation | policy)
+- Unbiased but high variance for rare events
+- **Doubly robust estimator**: combines IPS with direct model estimate — unbiased if either model is correct
+
+### Goodhart's Law
+- "When a measure becomes a target, it ceases to be a good measure"
+- Optimizing CTR → clickbait. Optimizing watch time → rabbit holes.
+- **Guardrail metrics**: secondary metrics that must not degrade (e.g., optimize CTR but guard satisfaction, retention)
+
+### Interview tip
+"Your model improved offline NDCG by 5% but online A/B test showed no improvement — why?" → Position bias, distribution shift, or offline metric doesn't capture real user behavior.
+
+---
+
+## System Performance Metrics (ML System Design)
+
+### Latency
+- **P50 (median)**: typical user experience
+- **P95**: captures tail latency
+- **P99**: 1 in 100 requests experience this or worse. Critical for SLAs.
+- Rule of thumb: P99 < 2-3x P50; if much higher, investigate tail causes
+
+### Throughput
+- **QPS (Queries Per Second)**: request handling capacity
+- **Tokens per second (TPS)**: LLM serving speed
+- **Batch throughput vs latency tradeoff**: larger batches → higher throughput but higher per-request latency
+
+### Model Efficiency
+- **FLOPs**: floating point operations per forward pass
+- **Model size**: parameter count (memory footprint)
+- **Inference time**: wall-clock time per prediction
+
+### SLA Thinking
+- Always discuss **latency budgets**: "Overall API budget is 200ms; ML model gets 50ms, feature retrieval 30ms, network 20ms"
+- Discuss **graceful degradation**: if ML model times out, fall back to simpler model or cached results
+
+---
+
+## Segmentation Metrics (Expanded)
+
+### Mean IoU (mIoU)
+- `mIoU = (1/C) · Σ [TP_c / (TP_c + FP_c + FN_c)]`
+- Standard benchmark metric for semantic segmentation (Pascal VOC, COCO, ADE20K)
+- Macro-average: each class contributes equally regardless of pixel count
+
+### Frequency-Weighted IoU (FWIoU)
+- Weight each class IoU by its pixel frequency
+- More forgiving of poor performance on rare classes
+
+### Panoptic Quality (PQ)
+- For panoptic segmentation (stuff + things): PQ = SQ × RQ
+- **SQ** (Segmentation Quality): average IoU of matched segments
+- **RQ** (Recognition Quality): F1 score of segment matching
+
+---
+
 ## Model Evaluation Summary Table
 
 | Task | Primary Metric | When to Use Alternatives |

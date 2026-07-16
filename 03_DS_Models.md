@@ -255,6 +255,168 @@ Total Error = Bias^2 + Variance + Irreducible Noise
 
 ---
 
+## Neural Network Fundamentals
+
+### Forward Pass and Backpropagation
+- **Forward pass**: input → linear transformation (z = Wx + b) → activation → ... → output → loss
+- **Backpropagation**: apply chain rule to compute ∂L/∂W for each layer, propagating gradients backward
+- **Computational graph**: each operation is a node; autograd (PyTorch) records operations and computes gradients automatically
+
+### Activation Functions
+| Function | Formula | Range | Pros | Cons |
+|---|---|---|---|---|
+| Sigmoid | σ(x) = 1/(1+e⁻ˣ) | (0,1) | Smooth, probabilistic | Vanishing gradients, not zero-centered |
+| Tanh | tanh(x) | (-1,1) | Zero-centered | Vanishing gradients |
+| ReLU | max(0,x) | [0,∞) | Fast, no vanishing gradient for x>0 | Dead neurons (dying ReLU) |
+| Leaky ReLU | max(αx, x), α=0.01 | (-∞,∞) | No dead neurons | α is a hyperparameter |
+| GELU | x·Φ(x) | ≈(-0.17,∞) | Smooth, used in transformers | Slightly slower |
+| SiLU/Swish | x·σ(x) | ≈(-0.28,∞) | Self-gated, smooth | Slightly slower |
+
+### Vanishing and Exploding Gradients
+- **Vanishing**: gradients shrink exponentially through layers (sigmoid/tanh). Deep networks stop learning.
+- **Exploding**: gradients grow exponentially. Weights diverge.
+- **Solutions**:
+  - Careful initialization: Xavier (sigmoid/tanh), He/Kaiming (ReLU)
+  - Batch Normalization: normalize activations to zero mean, unit variance per mini-batch
+  - Layer Normalization: normalize across features (preferred in transformers)
+  - Residual connections: y = F(x) + x — gradient flows directly through skip connection
+  - Gradient clipping: cap gradient norm to prevent explosion
+
+### Regularization Techniques
+- **Dropout**: randomly zero out neurons with probability p during training. Scale by (1-p) at test time.
+- **Weight decay / L2**: add λ||W||² to loss. Equivalent to Gaussian prior on weights.
+- **Early stopping**: monitor validation loss, stop when it starts increasing.
+- **Data augmentation**: increase effective dataset size (rotations, flips for images; back-translation for NLP).
+- **Label smoothing**: replace hard labels (0/1) with soft labels (ε/(K-1), 1-ε). Reduces overconfidence.
+
+### Batch Normalization vs Layer Normalization
+- **BatchNorm**: normalize across batch dimension for each feature. Issues with small batches, variable-length sequences.
+- **LayerNorm**: normalize across feature dimension for each sample. Batch-independent → preferred in transformers/RNNs.
+- **GroupNorm**: normalize across groups of channels. Good for small-batch CV (object detection).
+- **RMSNorm**: simplified LayerNorm without centering. Used in LLaMA. Faster, same quality.
+
+---
+
+## Optimization Algorithms
+
+### SGD and Variants
+- **Vanilla SGD**: `W = W - lr · ∇L`. Simple but slow, oscillates in ravines.
+- **SGD + Momentum**: `v = β·v - lr·∇L, W = W + v`. Accelerates convergence, dampens oscillations. β typically 0.9.
+- **Nesterov Momentum**: compute gradient at the "look-ahead" position. Slightly better convergence.
+
+### Adaptive Methods
+- **Adagrad**: adapts lr per-parameter using sum of squared gradients. Good for sparse data, but lr decays to zero.
+- **RMSProp**: fixes Adagrad's decay with exponential moving average of squared gradients.
+- **Adam**: combines momentum (1st moment m) + RMSProp (2nd moment v) with bias correction.
+  ```
+  m = β₁·m + (1-β₁)·g          # first moment (mean)
+  v = β₂·v + (1-β₂)·g²         # second moment (variance)
+  m̂ = m / (1 - β₁ᵗ)            # bias correction
+  v̂ = v / (1 - β₂ᵗ)
+  W = W - lr · m̂ / (√v̂ + ε)
+  ```
+  Defaults: β₁=0.9, β₂=0.999, ε=1e-8
+- **AdamW**: decouples weight decay from gradient update: `W = W - lr·(m̂/(√v̂+ε) + λ·W)`. Preferred in modern deep learning.
+
+### Learning Rate Schedules
+- **Step decay**: reduce lr by factor every N epochs
+- **Cosine annealing**: lr follows cosine curve from max to min. Smooth, widely used.
+- **Warmup + decay**: linearly increase lr for first K steps, then decay. Critical for transformer stability.
+- **One-cycle**: ramp up then ramp down in a single cycle. Fast convergence.
+
+### Interview tip
+"Why does Adam work better than SGD?" → Adam adapts lr per-parameter and uses momentum; but SGD + momentum can generalize better with proper tuning (finds flatter minima).
+
+---
+
+## Anomaly Detection Methods
+
+### Statistical Methods
+- **Z-score**: flag points > 3σ from mean. Assumes normality.
+- **IQR method**: outlier if value < Q1 - 1.5·IQR or > Q3 + 1.5·IQR. Non-parametric.
+- **Grubbs' test**: detect single outlier in univariate data.
+
+### ML Methods
+- **Isolation Forest**: randomly select feature and split value. Anomalies are isolated in fewer splits (shorter average path length). O(n log n) training.
+- **One-Class SVM**: learn a boundary around normal data in kernel space. New points outside = anomalies.
+- **Local Outlier Factor (LOF)**: compare local density of a point to its neighbors. Anomalies have lower density.
+- **Autoencoder-based**: train autoencoder on normal data. High reconstruction error → anomaly.
+- **DBSCAN**: points not assigned to any cluster (noise) are potential anomalies.
+
+### Applications
+Fraud detection, network intrusion, manufacturing defects, medical diagnostics, ML model input monitoring (data drift).
+
+---
+
+## Time Series Models
+
+### Stationarity
+- A series is **stationary** if its statistical properties (mean, variance, autocorrelation) don't change over time
+- **ADF test (Augmented Dickey-Fuller)**: null = non-stationary. p < 0.05 → reject → stationary.
+- **Differencing**: subtract previous value. d-th order differencing for ARIMA.
+
+### Classical Models
+- **ARIMA(p, d, q)**: p = AR order (lags), d = differencing, q = MA order (error lags)
+  - AR(p): `y_t = c + φ₁y_{t-1} + ... + φ_p·y_{t-p} + ε_t`
+  - Choose p,d,q using ACF/PACF plots or AIC/BIC
+- **SARIMA**: adds seasonal component (P, D, Q, m)
+- **Exponential Smoothing (ETS)**: weighted average with exponentially decreasing weights. Variants: simple, Holt (trend), Holt-Winters (trend + seasonality).
+- **Prophet** (Meta): decomposable: y(t) = trend + seasonality + holidays + error. Good for business data with missing values.
+
+### ML for Time Series
+- **Feature engineering approach**: lag features, rolling statistics, time features → XGBoost/LightGBM. Often competitive.
+- **LSTMs/GRUs**: sequence models for temporal dependencies. Prone to overfitting on small data.
+- **Temporal Fusion Transformers**: attention-based, handles multiple series with static covariates.
+
+### Interview tip
+"When would you use ARIMA vs ML?" → ARIMA for single univariate series with clear patterns; ML when you have many exogenous features or multiple related series.
+
+---
+
+## Model Calibration
+
+### What is Calibration?
+- A model is **calibrated** if when it predicts 70% probability, the event occurs ~70% of the time
+- Tree ensembles (XGBoost, RF) and neural networks are often poorly calibrated
+- Logistic regression is naturally better calibrated
+
+### Measuring Calibration
+- **Reliability diagram**: plot predicted probability (binned) vs actual frequency. Perfect calibration = diagonal.
+- **ECE (Expected Calibration Error)**: `ECE = Σ (n_b/N) · |acc_b - conf_b|`. Weighted average gap.
+- **Brier Score**: `BS = (1/n) · Σ(f_i - o_i)²`. Proper scoring rule combining calibration + discrimination. Lower = better.
+
+### Calibration Methods
+- **Platt Scaling**: fit logistic regression on model outputs (validation set) to map to calibrated probabilities.
+- **Isotonic Regression**: non-parametric monotonic step function. More flexible, needs more data.
+- **Temperature Scaling**: divide logits by T before softmax. T > 1 softens, T < 1 sharpens. Widely used in LLMs.
+
+### Interview tip
+"Your model has high AUC but users don't trust the probabilities — what do you do?" → check calibration with reliability diagram, apply Platt scaling or temperature scaling.
+
+---
+
+## Ensemble Methods: Stacking and Blending
+
+### Stacking (Stacked Generalization)
+1. Train K base models (e.g., XGBoost, LightGBM, RF, Neural Net)
+2. Generate **out-of-fold predictions** from each (using K-fold CV to avoid leakage)
+3. Train a **meta-learner** (often logistic regression) on base model predictions
+4. At test time: base models predict → feed to meta-learner → final prediction
+
+### Blending
+- Simpler variant: use a hold-out set instead of K-fold for generating base predictions
+- Faster but wastes data
+
+### Voting
+- **Hard voting**: majority class from base models
+- **Soft voting**: average predicted probabilities, then argmax. Usually better.
+
+### When to Stack
+- Works best when base models are **diverse** (different algorithms, different feature subsets)
+- Kaggle: almost always helps. Production: added complexity and latency often not worth it.
+
+---
+
 ## Key Interview Questions
 
 **Why does Random Forest reduce variance but not bias?**

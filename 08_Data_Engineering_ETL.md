@@ -1275,11 +1275,116 @@ cloudwatch.put_metric_alarm(
 
 ---
 
+## Apache Kafka Deep Dive
+
+### Core Concepts
+- **Topics**: logical streams of records, divided into **partitions** for parallelism
+- **Producers**: publish records to topics. Key determines partition (hash-based).
+- **Consumers**: read from partitions. Organized into **consumer groups**.
+- **Consumer groups**: each partition is consumed by exactly one consumer in the group → parallel consumption
+
+### Offset Management
+- Each consumer tracks its position (offset) in each partition
+- **Auto-commit**: periodic, at-least-once semantics (can reprocess on crash)
+- **Manual commit**: commit after processing for exactly-once control
+- **Consumer rebalancing**: when consumers join/leave, partitions are redistributed
+
+### Exactly-Once Semantics
+- **Idempotent producer**: `enable.idempotence=true` → deduplicates within a single partition
+- **Transactional producer**: atomic writes across multiple partitions
+- **Consumer**: read_committed isolation + idempotent downstream processing
+
+### Kafka Streams vs Flink
+| Aspect | Kafka Streams | Apache Flink |
+|---|---|---|
+| Deployment | Library (embedded in app) | Cluster (separate infrastructure) |
+| Complexity | Simple | More powerful |
+| Windowing | Tumbling, hopping, session | All types + custom |
+| State | RocksDB (local) | Managed, rescalable |
+| Use case | Simple ETL, enrichment | Complex event processing, ML features |
+
+---
+
+## Delta Lake / Apache Iceberg
+
+### Why Lakehouse?
+- Combine data lake flexibility (cheap storage, any format) with warehouse reliability (ACID, schema enforcement)
+- Query directly on S3/ADLS without loading into a warehouse
+
+### Delta Lake
+```sql
+-- Time travel: query past versions
+SELECT * FROM my_table VERSION AS OF 5;
+SELECT * FROM my_table TIMESTAMP AS OF '2024-01-15';
+
+-- Compaction: merge small files
+OPTIMIZE my_table;
+
+-- Z-ordering: co-locate related data for faster queries
+OPTIMIZE my_table ZORDER BY (user_id, date);
+```
+
+### Delta vs Iceberg vs Hudi
+| Feature | Delta Lake | Apache Iceberg | Apache Hudi |
+|---|---|---|---|
+| Ecosystem | Databricks-native | Vendor-neutral | Uber-originated |
+| ACID | Yes | Yes | Yes |
+| Time travel | Yes | Yes | Yes |
+| Partition evolution | Limited | Excellent (hidden partitions) | Limited |
+| Best for | Databricks users | Multi-engine (Spark, Trino, Flink) | Upsert-heavy workloads |
+
+---
+
+## Feature Engineering for ML Pipelines
+
+### Point-in-Time Correctness
+- **Problem**: using future data to compute features for training → label leakage
+- **Solution**: join features using **as-of joins** — for each training example, use only feature values available at prediction time
+- Feature Store handles this: stores versioned feature values with timestamps
+
+### Feature Store Architecture (Feast)
+```
+Offline Store (BigQuery/Redshift)     Online Store (Redis/DynamoDB)
+         ↑ batch materialization              ↑ real-time push
+   Spark/Airflow jobs                  Kafka/Flink streaming
+```
+- **Offline store**: historical features for training (high latency OK)
+- **Online store**: latest feature values for inference (sub-10ms latency)
+- **Feature registry**: definitions, owners, data types, lineage
+
+### Train-Serve Skew
+- The #1 source of production ML bugs
+- Features computed differently in training (Spark SQL) vs serving (Python API)
+- **Fix**: define features once in feature store, use same definitions for both
+
+---
+
+## Data Contracts
+
+### What They Are
+- Formal agreements between data producers and consumers on schema, quality, and SLAs
+- Prevent breaking changes from upstream teams silently breaking downstream pipelines
+
+### Components
+- **Schema contract**: column names, types, nullable constraints (enforced via schema registry)
+- **Quality contract**: expected value ranges, null rates, uniqueness (enforced via Great Expectations / Soda)
+- **SLA contract**: data freshness guarantees (e.g., "table updated by 6 AM UTC daily")
+
+### Confluent Schema Registry
+- Stores Avro/Protobuf/JSON schemas for Kafka topics
+- Enforces compatibility (backward, forward, full) on schema evolution
+- Prevents producers from breaking consumers with incompatible changes
+
+---
+
 ## Key Interview Points
 
 - **ETL vs ELT trade-off**: ETL: more control over transformation, no raw PII in warehouse; ELT: simpler pipelines, leverage warehouse compute, raw always available for reprocessing
 - **How do you handle late-arriving data?** Watermarks in streaming; reprocessing windows; SCD Type 2 date correction
 - **How to optimize a slow ETL query?** EXPLAIN PLAN; add indexes; partition pruning; reduce joins; use bulk/batch operations; columnar storage
+- **What is exactly-once semantics in Kafka?** Idempotent producer + transactional writes + consumer read_committed isolation. End-to-end requires idempotent downstream processing.
+- **Delta Lake vs Iceberg?** Delta is Databricks-native with great tooling; Iceberg is vendor-neutral with better partition evolution. Both provide ACID on data lakes.
+- **What is train-serve skew?** Features computed differently in training vs serving pipelines. Fix with a feature store that shares definitions.
 - **What is CDC and why is it better than timestamp?** Captures all changes (including deletes) from transaction log; no dependency on application updating timestamps; near real-time
 - **How do you ensure data quality in pipelines?** Schema validation at ingestion; business rule assertions (Great Expectations); anomaly detection on stats; alerting; idempotent reprocessing
 - **What makes a pipeline idempotent?** Running it multiple times produces same result. Use MERGE/upsert instead of INSERT; clear/reload partitions atomically.

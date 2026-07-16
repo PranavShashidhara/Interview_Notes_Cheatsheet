@@ -411,6 +411,149 @@ jobs:
 
 ---
 
+## GPU Workloads in Kubernetes
+
+### NVIDIA Device Plugin
+```yaml
+# Deploy NVIDIA device plugin (DaemonSet)
+# kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.0/nvidia-device-plugin.yml
+
+# Request GPU in pod spec
+resources:
+  limits:
+    nvidia.com/gpu: 1  # Request 1 GPU
+```
+
+### GPU Node Pool with Taints
+```yaml
+# Taint GPU nodes to prevent non-GPU workloads
+kubectl taint nodes gpu-node-1 nvidia.com/gpu=present:NoSchedule
+
+# Toleration in pod spec
+tolerations:
+- key: "nvidia.com/gpu"
+  operator: "Equal"
+  value: "present"
+  effect: "NoSchedule"
+```
+
+### K8s Job for Training
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: training-job
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+      - name: trainer
+        image: my-training:latest
+        resources:
+          limits:
+            nvidia.com/gpu: 4
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      restartPolicy: OnFailure
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: training-data-pvc
+```
+
+---
+
+## Helm Charts
+
+### What is Helm?
+Package manager for Kubernetes. A **chart** = collection of templated K8s manifests + values.
+
+### Chart Structure
+```
+my-chart/
+  Chart.yaml        # name, version, description
+  values.yaml       # default configuration values
+  templates/
+    deployment.yaml  # {{ .Values.replicas }}
+    service.yaml
+    ingress.yaml
+```
+
+### Common Commands
+```bash
+helm install my-release ./my-chart              # install
+helm upgrade my-release ./my-chart -f prod.yaml # upgrade with custom values
+helm rollback my-release 1                      # rollback to revision 1
+helm list                                       # list releases
+```
+
+---
+
+## RBAC (Role-Based Access Control)
+
+```yaml
+# Role: namespace-scoped permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: ml-serving
+  name: model-deployer
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update"]
+- apiGroups: [""]
+  resources: ["services", "pods"]
+  verbs: ["get", "list"]
+
+---
+# Bind role to a user/service account
+kind: RoleBinding
+metadata:
+  namespace: ml-serving
+  name: deploy-binding
+subjects:
+- kind: ServiceAccount
+  name: ci-deployer
+roleRef:
+  kind: Role
+  name: model-deployer
+  apiGroup: rbac.authorization.k8s.io
+```
+
+---
+
+## Probe Comparison for ML Serving
+
+| Probe | Purpose | ML Use Case |
+|---|---|---|
+| **startupProbe** | Wait for slow initialization | Model loading (large models take 30s-5min) |
+| **livenessProbe** | Restart if deadlocked | Detect OOM, GPU hang |
+| **readinessProbe** | Remove from service if not ready | Model reloading, warmup |
+
+```yaml
+startupProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  failureThreshold: 30    # 30 × 10s = 5 min for model loading
+  periodSeconds: 10
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  periodSeconds: 15
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  periodSeconds: 5
+```
+
+---
+
 ## Interview Key Points
 
 **Docker**

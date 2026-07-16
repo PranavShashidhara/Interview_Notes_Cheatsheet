@@ -235,11 +235,92 @@ loss = -log(sigmoid(score_pos - score_neg))
 
 ---
 
+## Deep Learning Ranking Models
+
+### DLRM (Deep Learning Recommendation Model — Meta)
+- **Dense features** → MLP → dense embedding
+- **Sparse features** (categorical) → embedding lookup
+- **Feature interactions**: dot product between all embedding pairs
+- Final MLP → prediction
+- Standard architecture behind Meta's ads and recommendation systems
+
+### DeepFM
+- Combines **factorization machine** (2nd-order feature interactions) with **deep neural network**
+- FM captures pairwise interactions; DNN captures higher-order
+- No manual feature engineering needed
+
+### DCN-v2 (Deep & Cross Network)
+- **Cross network**: explicit feature crosses at each layer: `x_{l+1} = x_0 ⊙ (W · x_l + b) + x_l`
+- **Deep network**: standard MLP for implicit interactions
+- Efficient, bounded-degree feature interactions without exponential blowup
+
+---
+
+## Contextual Bandits for Exploration
+
+### Why Bandits?
+- Standard A/B tests are wasteful: you keep showing bad variants to 50% of users
+- Bandits allocate more traffic to better variants while still exploring
+
+### Algorithms
+- **LinUCB**: linear model per arm, exploration via upper confidence bound on reward estimate
+- **Thompson Sampling**: maintain posterior over reward for each arm, sample and pick best. Naturally balances explore/exploit.
+- **Contextual**: features about the user/context inform the reward estimate per arm
+
+### When to Use
+- Content recommendation (homepage layout, article selection)
+- Ad creative selection
+- Model selection in ensemble serving
+- When you have many variants and limited traffic
+
+---
+
+## Debiasing Logged Data
+
+### Position Bias
+- Items shown in top positions get more clicks regardless of relevance
+- Naive models learn position → clicks, not quality → clicks
+
+### Solutions
+- **Inverse Propensity Scoring (IPS)**: weight each click by 1/P(position). Unbiased but high variance.
+- **Position feature**: include position as a feature during training, set to 0 at inference
+- **DLA (Dual Learning Algorithm)**: jointly learn relevance model and position bias model
+
+---
+
+## ML System Design: YouTube-Scale Recommendations
+
+### Stage 1: Candidate Generation (~1000 candidates, <50ms)
+- Two-tower model: user tower (history, demographics) + item tower (metadata, embeddings)
+- ANN retrieval from item index (FAISS, ScaNN)
+- Multiple candidate sources: similar items, trending, personalized
+
+### Stage 2: Ranking (~100 candidates, <50ms)
+- DLRM/DCN-v2 with rich features: user-item cross features, real-time engagement signals
+- Feature store provides sub-5ms feature lookups
+
+### Stage 3: Re-ranking (<20ms)
+- Business rules: diversity (MMR), freshness, content policy
+- Contextual bandit for exploration (10% traffic)
+
+### Stage 4: Policy Layer
+- Frequency capping, deduplication, A/B test bucketing
+
+### Feedback Loop
+- Log impressions + clicks → join with engagement (watch time, likes)
+- Retrain ranking model daily, candidate gen weekly
+- Monitor for popularity bias drift
+
+---
+
 ## Interview Key Points
 
 - **CF vs content-based?** CF: learns user-item interactions; better for novelty. Content: needs features; good for cold-start items. Hybrid usually best.
 - **Why matrix factorization?** Captures latent factors; scalable; low-rank assumption reasonable for most data.
 - **How to handle sparse data?** Regularization (L2), factorization (projects to k-dim), sampling negative examples carefully.
+- **What is DLRM?** Meta's architecture: embed sparse features, MLP for dense features, dot-product feature interactions, final MLP. Standard for industrial recommendation.
+- **How to handle position bias?** Include position as training feature (set to 0 at inference), or use IPS weighting, or jointly learn bias model.
+- **Design YouTube recommendations?** 4 stages: candidate gen (two-tower + ANN) → ranking (DLRM) → re-ranking (diversity + explore) → policy. Feature store for real-time signals.
 - **What is cold-start?** New user/item has no interactions. Solutions: content features, popularity baseline, ask preferences, exploration.
 - **Implicit vs explicit feedback?** Implicit: click ≠ dislike (only know likes). Explicit: ratings. Implicit needs ranking loss (BPR); larger scale.
 - **Two-tower model advantage?** Separates user and item representations; enables efficient serving (precompute item embeddings, FAISS search).

@@ -264,11 +264,96 @@ lang = detect("Bonjour, comment allez-vous?")  # 'fr'
 
 ---
 
+## BM25 — The Gold Standard for Sparse Retrieval
+
+### Formula
+```
+BM25(q, d) = Σ IDF(t) · [f(t,d) · (k1 + 1)] / [f(t,d) + k1 · (1 - b + b · |d|/avgdl)]
+```
+- **IDF(t)**: inverse document frequency — rare terms score higher
+- **f(t,d)**: term frequency of term t in document d
+- **k1** (typically 1.2-2.0): controls term frequency saturation. Higher = more weight on repeated terms.
+- **b** (typically 0.75): controls length normalization. b=0 ignores length; b=1 fully normalizes.
+
+### Why BM25 Still Matters
+- Fast, no training needed, works out-of-the-box
+- Strong baseline that neural models must beat
+- Used as first-stage retriever in retrieve-then-rerank pipelines
+- Hybrid search (BM25 + dense embeddings) often outperforms either alone
+
+---
+
+## Long Document Handling
+
+### Truncation Strategies
+- **Head**: keep first max_length tokens. Simple, loses tail content.
+- **Tail**: keep last max_length tokens. Useful when conclusion matters.
+- **Head + Tail**: concatenate first K and last K tokens. Captures intro and conclusion.
+
+### Chunking + Aggregation
+- Split document into overlapping chunks (e.g., 512 tokens with 50-token overlap)
+- Encode each chunk independently
+- Aggregate: max-pool, mean-pool, or attention-weighted combination
+- For classification: majority vote or max-confidence across chunks
+
+### Long-Context Models
+- **Longformer**: local sliding window attention + global attention on [CLS] and task-specific tokens. O(n) instead of O(n²).
+- **BigBird**: random + sliding window + global token attention.
+- **Modern LLMs**: 128K+ context windows (GPT-4, Claude) reduce the need for chunking
+
+---
+
+## Text Data Augmentation
+
+- **Back-translation**: translate to another language and back. Generates diverse paraphrases.
+- **EDA (Easy Data Augmentation)**: synonym replacement, random insertion, random swap, random deletion. Simple and effective.
+- **Paraphrase generation**: use a seq2seq model to generate paraphrases.
+- **Mixup at embedding level**: interpolate embeddings and labels of two examples.
+- **LLM-generated augmentation**: use GPT/Claude to generate additional training examples with controlled diversity.
+
+---
+
+## Multi-Label Classification Details
+
+### Key Differences from Multi-Class
+- Each example can have **multiple labels** simultaneously
+- Use **sigmoid** per label (not softmax). Each label is an independent binary decision.
+- Loss: **binary cross-entropy per label**, summed across labels.
+
+### Threshold Tuning
+- Default 0.5 threshold is rarely optimal
+- **Per-class thresholds**: tune on validation set to maximize per-class F1
+- **Micro-averaging**: threshold that optimizes overall F1 across all label-example pairs
+
+### Evaluation
+| Metric | Formula | Best For |
+|---|---|---|
+| **Micro F1** | Pool all TP/FP/FN across classes | When frequent classes matter more |
+| **Macro F1** | Average F1 per class | When rare classes matter equally |
+| **Weighted F1** | Weight by class frequency | Balanced view |
+| **Subset Accuracy** | Exact match of full label set | Very strict |
+| **Hamming Loss** | Fraction of wrong labels | Per-label error rate |
+| **MCC** | Matthews Correlation Coefficient | Best single metric for imbalanced binary |
+
+---
+
+## Weak Supervision and Programmatic Labeling
+
+- **Problem**: labeled data is expensive and slow to collect
+- **Snorkel**: write labeling functions (heuristics, regex, knowledge bases) → combine with label model → generate probabilistic labels
+- **LLM-as-annotator**: use GPT/Claude to label data at scale. Cheaper than human annotation for many tasks. Validate on a small human-labeled set.
+- **Active learning**: model identifies the most uncertain/informative examples → human labels those → retrain. Maximizes label efficiency.
+
+---
+
 ## Interview Key Points
 
 - **TF-IDF vs Word2Vec**: TF-IDF is sparse, interpretable, no training needed; Word2Vec is dense, captures semantic similarity but needs training corpus.
 - **Why subword tokenization?** Handles unknown words and rare words; vocabulary size manageable; works across languages with shared morphology.
 - **Stemming vs Lemmatization**: stemming is fast rule-based (may produce non-words); lemmatization is slower dictionary-based (always valid forms); use lemmatization when word meaning matters.
+- **BM25 vs dense retrieval?** BM25: no training, exact keyword match, fast. Dense: semantic matching, needs training, better for paraphrase queries. Hybrid combines both.
+- **How to handle 1M+ cardinality categorical features in NLP?** Hashing trick (feature hashing) + learned embeddings. Avoid one-hot.
+- **Macro vs Micro F1?** Micro pools all examples (dominated by frequent classes); Macro averages per-class F1 (gives equal weight to rare classes).
 - **Why XLM-RoBERTa over mBERT?** Larger training corpus (2.5TB vs Wikipedia), larger vocabulary (250K vs 119K), stronger multilingual performance especially on low-resource languages.
 - **How do you handle class imbalance in NLP?** Weighted loss, oversampling (with care for text), augmentation (back-translation, EDA), threshold tuning, evaluate with macro F1 / PR-AUC.
 - **What is catastrophic forgetting?** When fine-tuning on new task, model forgets pretrained knowledge. Mitigation: low learning rate, LoRA (only train adapters), elastic weight consolidation.

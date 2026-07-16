@@ -307,11 +307,116 @@ srun torchrun --nnodes=4 --nproc_per_node=8 train.py
 
 ---
 
+## FlashAttention
+
+### Why Attention is Memory-Bound
+- Standard attention materializes full N×N matrix in HBM → O(N²) memory
+- HBM bandwidth (2 TB/s on A100) is the bottleneck, not compute (312 TFLOPS)
+- Attention is memory-bound because arithmetic intensity is low
+
+### FlashAttention Algorithm
+- **Tiling**: split Q, K, V into blocks that fit in SRAM (~20MB on A100)
+- Compute attention block-by-block using **online softmax** (log-sum-exp accumulation)
+- Never materialize full N×N matrix → **O(N) memory** instead of O(N²)
+- **Speed**: 2-4× faster due to reduced HBM reads (SRAM is 10-100× faster)
+
+### FlashAttention v2
+- Better work partitioning across warps/thread blocks
+- Reduces non-matmul operations
+- ~2× faster than v1
+
+---
+
+## Prefill vs Decode Phase
+
+### Prefill (Prompt Processing)
+- Process all input tokens in parallel
+- **Compute-bound**: matrix multiplications on full sequence
+- Determines **time-to-first-token (TTFT)**
+
+### Decode (Token Generation)
+- Generate one token at a time, autoregressively
+- **Memory-bandwidth-bound**: each step reads full KV cache from HBM for a single token
+- Determines **tokens-per-second (TPS)**
+
+### Optimization Implications
+| Phase | Bottleneck | Optimization |
+|---|---|---|
+| Prefill | Compute | Tensor parallelism, larger batch |
+| Decode | Memory bandwidth | KV cache quantization, GQA/MQA, speculative decoding |
+
+### Chunked Prefill
+- Split long prompts into chunks, interleave with decode requests
+- Prevents long prompts from blocking decode for other requests
+- Used in vLLM's continuous batching
+
+---
+
+## Quantization Comparison
+
+| Method | Approach | Quality | Speed | Best For |
+|---|---|---|---|---|
+| **GPTQ** | Layer-by-layer, gradient-based | Good at INT4 | Fast inference | GPU deployment |
+| **AWQ** | Activation-aware, preserves salient channels | Better than GPTQ | Fast inference | GPU deployment |
+| **NF4** | Normalized float, information-theoretically optimal for normal weights | Good | Used with QLoRA | Fine-tuning |
+| **GGUF** | Block-wise quantization, CPU-friendly | Varies (Q4-Q8) | CPU inference | Local/edge deployment |
+| **SmoothQuant** | Smooth activation outliers into weights | Good at INT8 | W8A8 | Weight+activation quant |
+
+### When to Use What
+- **INT8 (W8A8)**: minimal quality loss, 2× speedup, good default
+- **INT4 (W4A16)**: noticeable quality loss on small models, fine for 7B+, 3-4× memory savings
+- **Always benchmark**: run eval suite on quantized model before deploying
+
+---
+
+## MoE (Mixture of Experts) Parallelism
+
+### How MoE Works
+- Replace dense FFN with multiple **expert** FFNs (e.g., 8 experts)
+- **Router** selects top-k experts per token (typically k=2)
+- Only k/N of FFN parameters activated per token → faster inference
+
+### Expert Parallelism (EP)
+- Distribute experts across GPUs: GPU₁ has experts 1-4, GPU₂ has experts 5-8
+- Tokens routed to the GPU holding their selected expert → **all-to-all communication**
+- Combine EP with TP for the attention layers
+
+### Load Balancing
+- Auxiliary loss to encourage uniform expert utilization
+- Without it: some experts get all tokens ("winner-take-all"), others unused
+- Mixtral uses top-2 routing with load balancing loss
+
+---
+
+## Back-of-Envelope GPU Math
+
+### Memory Estimation
+- Model parameters: 1B params × 2 bytes (FP16) = 2 GB
+- KV cache per token: 2 × n_layers × d_model × 2 bytes
+- For 70B model: ~140 GB in FP16 → needs 2× A100 80GB or 1× H100
+
+### Throughput Estimation
+- A100: 312 TFLOPS (FP16), 2 TB/s HBM bandwidth
+- Decode throughput ≈ HBM_bandwidth / (2 × model_size_bytes)
+- 70B model: 2TB/s ÷ (2 × 140GB) ≈ 7 tokens/s per GPU
+
+### Scaling for QPS
+- Target: 100 req/s, avg 200 output tokens, 70B model
+- Tokens/s needed: 100 × 200 = 20,000 tokens/s
+- Per GPU: ~7 tokens/s → need ~2,857 GPUs? No — use continuous batching
+- With batching (batch=64): ~200 tokens/s per GPU → ~100 GPUs
+- With INT4 quantization: 2× throughput → ~50 GPUs
+
+---
+
 ## Interview Key Points
 
 - **Data vs model parallelism trade-off?** Data parallelism: full model replicated; simple; limited by single GPU memory. Model parallelism: larger models; more communication overhead; complex.
 - **What is AllReduce?** Collective operation: sum (or other reduction) across all processes; broadcast result to all. Ring-AllReduce is bandwidth-optimal: O(2*(N-1)/N * data) total communication.
 - **How does ZeRO reduce memory?** Partition redundant optimizer states, gradients, parameters across GPUs. Each GPU only stores 1/N of each. Parameters gathered on-demand. Eliminates replication without adding communication vs DDP.
+- **Design: serve a 70B model at 100 req/s?** INT4 quantization + tensor parallelism across 2 GPUs per replica + continuous batching (vLLM) + ~25 replicas behind load balancer.
+- **Prefill vs decode bottleneck?** Prefill is compute-bound (parallelize with TP). Decode is memory-bandwidth-bound (optimize with GQA, KV cache quantization, speculative decoding).
+- **FlashAttention: same O(n²) FLOPs but faster — why?** Reduces HBM reads by tiling to SRAM. Bottleneck is memory bandwidth, not compute.
 - **Why is pipeline parallelism useful for cross-node training?** TP requires frequent all-reduce (needs fast NVLink); PP only communicates activations at stage boundaries (less frequent; tolerates slower InfiniBand).
 - **What is continuous batching?** Traditional batching: wait for full batch; GPU idle when some sequences finish early. Continuous batching: insert new sequences into ongoing batch when slots free. Higher GPU utilization.
 - **Trade-off between quantization quality levels?** Q4_K_M: 4-bit; smallest; fastest; minor quality loss. Q8_0: 8-bit; near-lossless; 2x larger. F16: full half-precision; best quality; largest. Choose based on memory constraints and quality requirements.

@@ -240,3 +240,121 @@ Generates synthetic minority samples proportionally in harder-to-learn regions. 
 - **BERTScore**: semantic similarity using contextual embeddings
 - **KL divergence**: used in PPO/RLHF to keep policy close to reference model
 - **Calibration**: whether model confidence (probability) matches empirical accuracy; measured with ECE (Expected Calibration Error)
+
+---
+
+## Causal Inference Fundamentals
+
+### Key Concepts
+- **Correlation ≠ Causation**: observational data has confounders; randomized experiments (RCTs/A/B tests) are the gold standard
+- **Directed Acyclic Graphs (DAGs)**: graphical representation of causal relationships. Nodes = variables, edges = causal effects
+- **Confounders**: variables that affect both treatment and outcome. Must control for them to estimate causal effect
+- **Colliders**: conditioning on a collider opens a non-causal path (collider bias)
+- **Simpson's Paradox**: aggregate trend reverses when data is split by a confounding variable. Example: treatment appears harmful overall but beneficial in every subgroup because of unequal group sizes
+
+### Methods for Observational Data
+- **Propensity Score Matching (PSM)**: estimate P(treatment | covariates), match treated/control units with similar propensity scores. Reduces selection bias.
+- **Difference-in-Differences (DID)**: compare change in outcome over time between treated and control groups. Assumes parallel trends.
+- **Regression Discontinuity Design (RDD)**: exploit a threshold/cutoff in treatment assignment. Compare units just above vs just below.
+- **Instrumental Variables (IV)**: use a variable that affects treatment but not outcome directly. Two-stage least squares (2SLS).
+- **Backdoor Criterion**: to estimate causal effect of X on Y, block all backdoor paths by conditioning on appropriate variables.
+
+### Interview tip
+"How would you measure the effect of X on Y without an A/B test?" → use one of these observational methods depending on data availability.
+
+---
+
+## Bootstrap and Resampling Methods
+
+### Bootstrap Algorithm
+1. From dataset of size n, draw n samples **with replacement** → one bootstrap sample
+2. Compute statistic of interest (mean, median, model coefficient)
+3. Repeat B times (typically B = 1000–10000)
+4. Use distribution of B statistics for confidence intervals
+
+### Bootstrap Confidence Intervals
+- **Percentile method**: use the 2.5th and 97.5th percentiles of bootstrap distribution for 95% CI
+- **BCa (bias-corrected and accelerated)**: adjusts for bias and skewness — preferred in practice
+
+### When to Use Bootstrap
+- Distribution of statistic is unknown or hard to derive analytically
+- Small sample sizes where CLT may not apply
+- Complex statistics (median, ratios, custom metrics)
+- Non-parametric — makes no distributional assumptions
+
+### Other Resampling Methods
+- **Jackknife**: leave-one-out, estimate bias and variance of an estimator
+- **Permutation test**: shuffle labels to build null distribution, compute p-value as fraction of permuted statistics ≥ observed
+
+---
+
+## Advanced A/B Testing
+
+### Variance Reduction — CUPED
+- **CUPED (Controlled-experiment Using Pre-Experiment Data)**: use pre-experiment metric values as a covariate to reduce variance
+- Adjusted metric: `Y_adj = Y - θ * X`, where X = pre-experiment value, `θ = Cov(X,Y)/Var(X)`
+- Can reduce required sample size by 50%+ in practice
+
+### Multi-Armed Bandits
+- **Epsilon-greedy**: exploit best arm with probability 1-ε, explore random arm with ε
+- **UCB (Upper Confidence Bound)**: pick arm with highest upper confidence bound. Balances exploration/exploitation.
+- **Thompson Sampling**: maintain Beta posterior for each arm, sample and pick highest. Bayesian approach, often best in practice.
+- When to use bandits vs A/B tests: bandits for continuous optimization (ad serving, recommendation); A/B tests for definitive hypothesis testing
+
+### Network Effects and Interference
+- Standard A/B tests assume **SUTVA** (Stable Unit Treatment Value Assumption) — one user's treatment doesn't affect another
+- Violated in social networks, marketplaces, ride-sharing
+- Solutions: **cluster randomization** (randomize by geographic region), **switchback experiments** (alternate treatment over time periods)
+
+### Sequential Testing
+- **Problem with peeking**: checking results before planned sample size inflates false positive rate
+- **Group sequential designs**: pre-specified interim analyses with adjusted alpha (O'Brien-Fleming, Pocock boundaries)
+- **Always-valid p-values**: anytime-valid inference that controls error rate regardless of when you stop
+
+### Multiple Testing Correction
+- **Bonferroni**: divide α by number of tests. Conservative.
+- **Benjamini-Hochberg (FDR)**: controls false discovery rate. Less conservative, preferred when many tests.
+- **Holm-Bonferroni**: step-down procedure, uniformly more powerful than Bonferroni
+
+---
+
+## Statistical vs Practical Significance
+
+- **Statistical significance**: p-value < α (typically 0.05). The effect is unlikely due to chance.
+- **Practical significance**: the effect size is large enough to matter for the business.
+- A/B test with 10M users can detect a 0.01% lift with p < 0.05 — statistically significant but practically meaningless.
+
+### Effect Size Measures
+- **Cohen's d** = (μ₁ - μ₂) / σ_pooled → Small: 0.2, Medium: 0.5, Large: 0.8
+- **Cohen's h** for proportions: h = 2·arcsin(√p₁) - 2·arcsin(√p₂)
+- **Relative lift**: (treatment - control) / control × 100%
+- **Minimum Detectable Effect (MDE)**: smallest effect size your test is powered to detect. Always define MDE before running a test.
+
+### P-Value Misconceptions (Common Interview Trap)
+- "P-value is the probability the null hypothesis is true" → **Wrong.** It's P(data | H₀), not P(H₀ | data).
+- "P = 0.03 means 3% chance the result is due to chance" → **Wrong.** It means: if H₀ were true, we'd see data this extreme 3% of the time.
+- "P > 0.05 means no effect" → **Wrong.** Insufficient evidence ≠ evidence of absence.
+- "P = 0.05 is a universal threshold" → **Wrong.** It's arbitrary; some fields use 0.01 or 0.001.
+
+---
+
+## Survival Analysis Basics
+
+### Core Concepts
+- **Survival function S(t)** = P(T > t): probability of surviving past time t
+- **Hazard function h(t)** = instantaneous failure rate at time t, given survival to t
+- **Censoring**: when we don't observe the event (user still active at study end = right-censored)
+
+### Key Methods
+- **Kaplan-Meier estimator**: non-parametric estimate of S(t). Steps down at each observed event time. Handles censoring.
+- **Log-rank test**: compare survival curves between two groups (e.g., treatment vs control)
+- **Cox Proportional Hazards**: semi-parametric model. `h(t|X) = h₀(t) · exp(β·X)`. Estimates effect of covariates on hazard without specifying baseline hazard.
+
+### ML Applications
+- Customer churn prediction (time to churn)
+- User retention modeling
+- Equipment failure prediction (predictive maintenance)
+- Clinical trial outcomes
+
+### Interview tip
+"How would you model time-to-event data where some users haven't churned yet?" → survival analysis with censoring, not standard classification.

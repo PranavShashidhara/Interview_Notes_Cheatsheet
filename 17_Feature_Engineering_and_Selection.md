@@ -382,11 +382,128 @@ target_mean = (df.groupby('category')['target'].sum() + alpha) / \
 
 ---
 
+## Missing Value Handling
+
+### Types of Missingness
+- **MCAR** (Missing Completely At Random): missingness unrelated to any variable. Safe to drop.
+- **MAR** (Missing At Random): missingness depends on observed variables. Can impute.
+- **MNAR** (Missing Not At Random): missingness depends on the missing value itself. Hardest — imputation is biased.
+
+### Imputation Strategies
+| Method | When to Use | Code |
+|---|---|---|
+| Mean/Median | Numerical, MCAR | `df['col'].fillna(df['col'].median())` |
+| Mode | Categorical | `df['col'].fillna(df['col'].mode()[0])` |
+| Forward/Backward fill | Time series | `df['col'].ffill()` |
+| KNN Imputer | Complex relationships | `KNNImputer(n_neighbors=5).fit_transform(X)` |
+| MICE (Iterative) | MAR, multivariate | `IterativeImputer().fit_transform(X)` |
+
+### Missingness as a Feature
+- Create binary indicator: `df['col_missing'] = df['col'].isna().astype(int)`
+- The fact that a value is missing can be informative (e.g., no income → unemployed)
+
+---
+
+## Temporal Feature Patterns
+
+### Lag Features
+```python
+# Lag features for time series
+df['sales_lag_1'] = df.groupby('store_id')['sales'].shift(1)
+df['sales_lag_7'] = df.groupby('store_id')['sales'].shift(7)
+```
+
+### Rolling Window Aggregates
+```python
+df['sales_rolling_7d_mean'] = df.groupby('store_id')['sales'].transform(
+    lambda x: x.rolling(7, min_periods=1).mean()
+)
+df['sales_rolling_7d_std'] = df.groupby('store_id')['sales'].transform(
+    lambda x: x.rolling(7, min_periods=1).std()
+)
+```
+
+### Exponential Weighted Mean
+```python
+df['sales_ewm'] = df.groupby('store_id')['sales'].transform(
+    lambda x: x.ewm(span=7).mean()
+)
+```
+
+### Time-Based Features
+- Hour of day, day of week, month, is_weekend, is_holiday
+- Time since last event: `df['time_since_last'] = df['timestamp'].diff()`
+- Cyclical encoding: `sin(2π × hour/24)`, `cos(2π × hour/24)`
+
+---
+
+## Train-Serve Skew
+
+### The Problem
+- Features computed differently in training (Spark SQL batch) vs serving (Python real-time API)
+- #1 source of production ML bugs — model performs well offline, poorly online
+
+### Causes
+- Different code paths for same feature
+- Different library versions (pandas vs Spark rounding differences)
+- Time-of-compute differences (training uses exact time, serving uses stale cache)
+
+### Solutions
+1. **Feature Store**: single definition, shared computation for train and serve
+2. **Feature contracts**: validate feature distributions at serving time against training baseline
+3. **Integration tests**: compute features both ways, assert equality
+
+---
+
+## SMOTE and Class Imbalance
+
+### SMOTE (Synthetic Minority Over-sampling Technique)
+- Generate synthetic minority examples by interpolating between existing minority points
+- For each minority point, find k nearest neighbors, create synthetic point along the line connecting them
+
+### When SMOTE Helps vs Hurts
+| Scenario | SMOTE | Alternative |
+|---|---|---|
+| Tabular, moderate imbalance (1:10) | Often helps | Class weights |
+| Extreme imbalance (1:1000) | May overfit minority | Focal loss, anomaly detection |
+| High-dimensional data | Noisy synthetic points | Class weights, threshold tuning |
+| Time series | Violates temporal order | Use class weights instead |
+
+### Class Weight Adjustment
+```python
+# Simpler alternative: adjust loss weights
+from sklearn.utils.class_weight import compute_class_weight
+weights = compute_class_weight('balanced', classes=[0, 1], y=y_train)
+model = LogisticRegression(class_weight='balanced')
+```
+
+---
+
+## Feature Drift Detection (PSI)
+
+### Population Stability Index
+```
+PSI = Σ (actual_pct - expected_pct) × ln(actual_pct / expected_pct)
+```
+- **PSI < 0.1**: no significant shift
+- **0.1 ≤ PSI < 0.25**: moderate shift — investigate
+- **PSI ≥ 0.25**: significant shift — likely need to retrain
+
+### How to Use
+- Compute PSI for each feature between training and production data
+- Monitor daily/weekly
+- Alert and trigger retraining when PSI exceeds threshold
+
+---
+
 ## Interview Key Points
 
 - **Why scale features?** Linear models assume equal scale; gradient descent converges faster; distance-based algorithms (KNN, SVM) sensitive to scale.
 - **One-hot vs target encoding?** One-hot: low cardinality, no assumptions. Target: high cardinality, captures target-feature relationship; risk of leakage.
 - **How to handle high-cardinality categoricals?** Target encoding, hashing, embeddings, grouping rare categories into "Other".
+- **How to handle 1M-cardinality features?** Feature hashing (hashing trick) to fixed-size vector + learned embeddings.
+- **How to detect feature drift?** PSI (Population Stability Index) comparing production vs training distributions. PSI > 0.25 = significant shift.
+- **What is train-serve skew?** Features computed differently in training vs serving. Fix with feature store + shared definitions.
 - **When to use polynomial features?** Small feature set + suspected non-linear relationships; beware curse of dimensionality.
 - **Filter vs wrapper selection?** Filter: fast, model-agnostic; ignores interactions. Wrapper: captures interactions; slow. Use filter first, then wrapper.
 - **Why is data leakage problematic?** Model looks good in dev but fails in production; violates train/test independence.

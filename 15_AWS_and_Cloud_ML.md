@@ -280,9 +280,107 @@ estimator = PyTorch(
 
 ---
 
+## SageMaker Model Monitor
+
+### Monitor Types
+| Monitor | What It Tracks | Trigger |
+|---|---|---|
+| **Data Quality** | Feature statistics drift (PSI, KL divergence) | Input distribution shift |
+| **Model Quality** | Accuracy, F1, AUC over time | Performance degradation |
+| **Bias Drift** | Fairness metrics across subgroups | Demographic bias shifts |
+| **Feature Attribution** | SHAP value distributions change | Explanation drift |
+
+### How It Works
+1. Capture inference requests/responses to S3 (data capture config)
+2. Create baseline from training data statistics
+3. Schedule monitoring jobs (hourly/daily)
+4. CloudWatch alarms when violations exceed thresholds → trigger retraining pipeline
+
+---
+
+## Feature Store: Online vs Offline
+
+| Aspect | Online Store | Offline Store |
+|---|---|---|
+| **Purpose** | Real-time inference | Training data |
+| **Latency** | <10ms | Minutes-hours |
+| **Storage** | DynamoDB / ElastiCache | S3 / Redshift |
+| **Ingestion** | Streaming (Kinesis) | Batch (Spark/Glue) |
+| **Query pattern** | Point lookup by entity ID | Time-range scans |
+
+### SageMaker Feature Store
+```python
+# Create feature group
+feature_group = FeatureGroup(name="user-features", sagemaker_session=session)
+feature_group.load_feature_definitions(data_frame=df)
+feature_group.create(
+    s3_uri="s3://bucket/features",
+    enable_online_store=True,
+    record_identifier_name="user_id",
+    event_time_feature_name="event_time"
+)
+
+# Ingest features
+feature_group.ingest(data_frame=df, max_workers=3)
+
+# Online retrieval at inference time
+record = feature_store.get_record(
+    feature_group_name="user-features",
+    record_identifier_value_as_string="user_123"
+)
+```
+
+---
+
+## Deployment Strategies on SageMaker
+
+| Strategy | How | When |
+|---|---|---|
+| **Blue/Green** | Deploy new endpoint, switch traffic atomically | Zero-downtime, instant rollback |
+| **Canary** | Route 10% traffic to new model, monitor, then 100% | Gradual rollout with safety |
+| **Shadow** | Send traffic to both old and new, compare outputs (only serve old) | Validate before any production impact |
+| **A/B Testing** | Production variants with traffic split | Compare model versions with real users |
+
+```python
+# A/B testing with production variants
+predictor = model.deploy(
+    initial_instance_count=1,
+    instance_type='ml.g5.xlarge',
+    production_variants=[
+        ProductionVariant(model_name='model-v1', initial_weight=90),
+        ProductionVariant(model_name='model-v2', initial_weight=10),
+    ]
+)
+```
+
+---
+
+## Real-Time ML Pipeline on AWS
+
+```
+User Event → API Gateway → Kinesis Data Streams
+                              ↓
+                        Lambda (enrich)
+                              ↓
+                   SageMaker Feature Store (online)
+                              ↓
+                   SageMaker Endpoint (model inference)
+                              ↓
+                        DynamoDB (result cache)
+                              ↓
+                   CloudWatch (metrics + alarms)
+```
+
+**Latency budget**: API Gateway (10ms) → Kinesis (50ms) → Lambda (20ms) → Feature Store (5ms) → Model (30ms) → DynamoDB (5ms) = ~120ms total
+
+---
+
 ## Interview Key Points
 
 - **When to use Lambda vs EC2 vs SageMaker for ML?** Lambda: lightweight preprocessing, webhook handlers, <15min, no GPU. EC2: full control, custom GPU setup, long-running. SageMaker: managed training + deployment, built-in distributed training, model registry, A/B testing.
 - **How does Bedrock differ from directly calling Claude API?** Bedrock: stays in AWS VPC, no data sent to Anthropic, IAM-controlled access, same region as data. Direct API: simpler, outside AWS ecosystem.
 - **How would you make a Lambda function more memory-efficient?** Import only needed modules, use lazy loading, reuse connections outside handler, use Layers for large dependencies, consider EFS for large model files.
+- **How does SageMaker Model Monitor detect drift?** Captures inference data to S3, compares feature distributions against training baseline using PSI/KL divergence, triggers CloudWatch alarms.
+- **Online vs offline feature store?** Online: sub-10ms point lookups for real-time inference (DynamoDB). Offline: batch time-range queries for training (S3). Both share the same feature definitions to prevent train-serve skew.
+- **Design: real-time fraud detection on AWS?** Kinesis → Lambda enrichment → Feature Store (online) → SageMaker Endpoint → DynamoDB result → CloudWatch alarms. Total latency < 200ms.
 - **What is the difference between SageMaker endpoint and Lambda for inference?** SageMaker: persistent GPU-backed compute, auto-scaling, A/B deployments, monitoring. Lambda: serverless CPU only, cold start, pay-per-invocation, simpler.

@@ -275,11 +275,57 @@ Off-policy can reuse data; on-policy simpler but sample-inefficient.
 
 ---
 
+## RLHF (RL from Human Feedback)
+
+### Why RLHF Matters
+- The most asked RL topic at AI companies in 2025
+- Aligns language models with human preferences after pre-training + SFT
+
+### Pipeline
+1. **SFT (Supervised Fine-Tuning)**: fine-tune base model on high-quality demonstrations
+2. **Reward Model Training**: collect human preference pairs (A > B), train reward model to predict preferences
+3. **PPO Fine-Tuning**: optimize policy (LLM) to maximize reward while staying close to SFT model
+   - KL penalty: `reward_total = reward_model(response) - β · KL(π || π_ref)` prevents reward hacking
+
+### DPO (Direct Preference Optimization)
+- Eliminates separate reward model
+- Directly optimizes policy from preference pairs using implicit reward
+- Loss: `L = -log σ(β · [log π(y_w|x)/π_ref(y_w|x) - log π(y_l|x)/π_ref(y_l|x)])`
+- Simpler pipeline, comparable results
+
+### RLHF Failure Modes
+- **Reward hacking**: model finds shortcuts to maximize reward without being helpful (Goodhart's Law)
+- **Length bias**: reward models often prefer longer responses → model becomes verbose
+- **Sycophancy**: model agrees with user rather than being truthful
+
+---
+
+## Offline RL
+
+### Why Offline RL?
+- Learn from logged data without environment interaction
+- Critical for domains where online exploration is expensive/dangerous (healthcare, robotics, recommendations)
+
+### Key Algorithms
+- **CQL (Conservative Q-Learning)**: penalizes Q-values for unseen actions → conservative policy
+- **IQL (Implicit Q-Learning)**: avoids querying out-of-distribution actions entirely
+- **Decision Transformer**: frame RL as sequence modeling (state, action, reward → next action)
+
+### Applications in ML
+- Recommendation systems (learn from logged user interactions)
+- Dialogue systems (learn from conversation logs)
+- Robotics (learn from demonstrations)
+
+---
+
 ## Interview Key Points
 
 - **MDP vs Bandit?** MDP: state matters (sequential decisions). Bandit: state doesn't matter (independent decisions).
 - **Q-learning: on or off-policy?** Off-policy (learns optimal policy while following exploratory policy).
 - **Why experience replay in DQN?** Breaks correlation between updates (experiences nearly i.i.d.; improves stability).
+- **How does RLHF work?** SFT → train reward model on human preferences → PPO with KL penalty against SFT model. Aligns LLM with human preferences.
+- **What is DPO?** Direct Preference Optimization — skips reward model, directly optimizes policy from preference pairs. Simpler than PPO-based RLHF.
+- **What is reward hacking?** Model exploits reward model weaknesses (e.g., longer = higher reward) without actually being more helpful. Mitigate with KL penalty and diverse reward signals.
 - **Value-based vs Policy-based?** Value: estimate V/Q first, then act greedily. Policy: directly optimize policy (can be stochastic).
 - **Actor-Critic: why both networks?** Actor (policy) learns actions; Critic (value) estimates advantage (reduces variance).
 - **PPO vs TRPO?** PPO: simpler, easier to tune (clip gradient). TRPO: theoretically sound trust region (more complex).

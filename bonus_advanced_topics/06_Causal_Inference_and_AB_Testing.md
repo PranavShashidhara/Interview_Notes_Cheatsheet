@@ -239,11 +239,76 @@ Treating user A affects user B (friend); breaks independence
 
 ---
 
+## CUPED (Variance Reduction)
+
+### How It Works
+- Use pre-experiment metric values as a covariate to reduce variance
+- Adjusted metric: `Y_adj = Y - θ · X` where X = pre-experiment value, `θ = Cov(X,Y)/Var(X)`
+- If pre/post correlation is high (e.g., 0.8), can reduce sample size by ~60%
+
+### Why It Matters
+- Faster experiments (reach significance sooner)
+- Detect smaller effects with same sample size
+- Standard at FAANG — almost all experiments at Microsoft/Meta use CUPED
+
+---
+
+## Instrumental Variables (IV)
+
+### When to Use
+- Can't randomize (ethical/practical reasons)
+- Propensity score methods fail (unmeasured confounders)
+- Need a variable (instrument) that: (1) affects treatment, (2) doesn't directly affect outcome, (3) isn't correlated with unmeasured confounders
+
+### Examples
+- Distance to hospital as instrument for treatment type
+- Draft lottery number as instrument for military service
+- Weather as instrument for store visits
+
+### Two-Stage Least Squares (2SLS)
+1. **Stage 1**: regress treatment on instrument → get predicted treatment
+2. **Stage 2**: regress outcome on predicted treatment → causal effect estimate
+
+---
+
+## Difference-in-Differences (DiD)
+
+### Setup
+- Treatment group gets intervention at time T; control group doesn't
+- Compare **change** in outcome: (treatment_after - treatment_before) - (control_after - control_before)
+
+### Key Assumption
+- **Parallel trends**: absent the treatment, both groups would have followed the same trend
+- Validate: check pre-treatment trends are parallel
+
+### Applications
+- Policy impact analysis (new feature rollout by region)
+- Marketing campaign effectiveness
+- Natural experiments (competitor exits a market)
+
+---
+
+## Switchback Experiments
+
+### Why
+- For marketplace/ride-sharing where SUTVA is violated (treatment of one user affects others)
+- Example: changing surge pricing affects drivers AND riders in the same area
+
+### How
+- Alternate between treatment and control over **time periods** within the same region
+- Each time period is a unit of randomization
+- Reduces interference compared to user-level randomization
+
+---
+
 ## Interview Key Points
 
 - **A/B test significance: α vs β?** α = false positive (reject null when true). β = false negative (fail to reject when false). Power = 1 - β.
 - **Why randomize?** Eliminates bias; treatment and control similar in expectation; causality.
 - **Sample size: how to reduce?** Bigger effect size (easier to detect); increase power tolerance (80% → 70%); smaller significance level costs sample size.
+- **What is CUPED?** Uses pre-experiment data as covariate to reduce variance. Can cut required sample size by 50%+. Standard at FAANG.
+- **When to use DiD?** When you can't randomize but have before/after data for treatment and control groups. Assumes parallel trends.
+- **What are instrumental variables?** A variable that affects treatment but not outcome directly. Use 2SLS to estimate causal effect when there are unmeasured confounders.
 - **Bonferroni vs FDR?** Bonferroni: control false positive rate (strict). FDR: control false discovery rate (lenient); better for many tests.
 - **Propensity score: what does it do?** Estimate probability of treatment; matching on it removes confounding (under no unmeasured confounder assumption).
 - **Why stratified analysis?** Uncover Simpson's paradox; identify interaction effects; improve efficiency.

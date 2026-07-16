@@ -217,11 +217,56 @@ for t in range(len(train), len(df) - k):
 
 ---
 
+## Modern Deep Learning for Time Series
+
+### N-BEATS (Neural Basis Expansion)
+- Stack of fully-connected blocks with backward/forward residual connections
+- Each block predicts backcast (explains past) and forecast (predicts future)
+- Interpretable version: trend + seasonality blocks
+- No need for feature engineering — works directly on raw series
+
+### N-HiTS
+- Extension of N-BEATS with hierarchical interpolation
+- Different blocks handle different frequencies/horizons
+- Faster and more accurate than N-BEATS for long horizons
+
+### Temporal Fusion Transformer (TFT)
+- Attention-based model for multi-horizon forecasting
+- Handles: static covariates, known future inputs, observed past inputs
+- Built-in variable selection and interpretable attention weights
+- State-of-the-art on many benchmarks
+
+### When to Use What
+| Scenario | Model | Why |
+|---|---|---|
+| Single univariate, small data | ARIMA/ETS | Statistical, well-understood |
+| Business forecasting, holidays | Prophet | Built-in holiday/event handling |
+| Multivariate, many exogenous features | TFT or XGBoost with lags | Handles covariates well |
+| Many related series | N-HiTS, TFT | Learns cross-series patterns |
+
+---
+
+## Probabilistic Forecasting
+
+### Why Point Forecasts Aren't Enough
+- Business decisions need uncertainty: "sales will be 100 ± 20 units" is more useful than "sales will be 100"
+- Inventory planning, risk management, resource allocation all need prediction intervals
+
+### Methods
+- **Quantile regression**: predict specific quantiles (10th, 50th, 90th percentile) directly
+- **Conformal prediction**: distribution-free prediction intervals with guaranteed coverage
+- **Monte Carlo dropout**: run inference with dropout multiple times, use variance as uncertainty
+- **Ensemble spread**: train multiple models, use prediction variance
+
+---
+
 ## Interview Key Points
 
 - **Stationarity: why matters?** ARIMA assumes stationary; non-stationary means mean/variance change over time; need differencing.
 - **ARIMA vs Prophet?** ARIMA: statistically grounded, requires tuning. Prophet: simpler, handles holidays/events, more robust.
 - **RNN vs CNN for time series?** RNN: sequential, maintains hidden state. CNN: parallel (fast), dilated convolutions capture multiple timescales. TCN combines both.
+- **What is TFT?** Temporal Fusion Transformer — attention-based, handles static/known/observed inputs, built-in feature selection. State-of-the-art for multi-horizon forecasting.
+- **Why probabilistic forecasting?** Business decisions need uncertainty bounds, not just point estimates. Use quantile regression or conformal prediction.
 - **Why LSTM over RNN?** LSTM has gates (forget, input, output) to control information flow; mitigates vanishing gradient.
 - **Trend vs seasonality?** Trend: long-term direction. Seasonality: repeating patterns. Both need handling for good forecasts.
 - **Autocorrelation: how to use?** ACF shows lags correlated with current value (suggests AR order). PACF shows direct dependence (partial correlation).

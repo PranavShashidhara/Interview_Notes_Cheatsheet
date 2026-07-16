@@ -313,11 +313,107 @@ assert ratio >= 0.8, "Disparate impact detected"
 
 ---
 
+## LLM Interpretability (Mechanistic Interpretability)
+
+### Logit Lens
+- Look at intermediate layer outputs and project them through the final unembedding matrix
+- Shows how the model's "prediction" evolves through layers
+- Early layers: syntactic/positional. Later layers: semantic/factual.
+
+### Attention Head Analysis
+- **Induction heads**: copy patterns from earlier in context (key mechanism for in-context learning)
+- **Ablation studies**: zero out specific heads to measure their contribution
+- Attention patterns can reveal what the model "looks at" but don't fully explain decisions
+
+### Activation Patching
+- Replace activations at a specific layer/position from one input with activations from another
+- If output changes → that component is causally important for the prediction
+- Used to localize where factual knowledge is stored in the model
+
+### Superposition Hypothesis
+- Models represent more features than they have dimensions (superposition)
+- Features are encoded as near-orthogonal directions in activation space
+- Sparse autoencoders can decompose activations into interpretable features
+
+---
+
+## Counterfactual Explanations
+
+### What They Are
+- "What would need to change for a different outcome?"
+- Example: "You were denied a loan. If your income were $5K higher and debt $2K lower, you would be approved."
+- Actionable — tells the user what to change, not just what mattered
+
+### DiCE (Diverse Counterfactual Explanations)
+- Generate multiple diverse counterfactuals (not just one)
+- Constraints: only change actionable features (can't change age), respect feature ranges
+- Useful for regulatory compliance (GDPR right to explanation)
+
+### Contrastive Explanations
+- "Why A and not B?" rather than just "Why A?"
+- More natural for human understanding
+- Identify the minimal feature changes that would flip the prediction
+
+---
+
+## Model Cards
+
+### What They Are
+- Standardized documentation for ML models (Mitchell et al., 2019)
+- Required at many FAANG companies for production models
+
+### Key Sections
+| Section | Content |
+|---|---|
+| **Model Details** | Architecture, training data, version |
+| **Intended Use** | Primary use cases, out-of-scope uses |
+| **Performance** | Metrics broken down by subgroup (age, gender, geography) |
+| **Limitations** | Known failure modes, biases |
+| **Ethical Considerations** | Potential harms, mitigation strategies |
+| **Training Data** | Source, size, preprocessing, potential biases |
+
+---
+
+## Fairness Deep Dive
+
+### Calibration Fairness
+- Does 80% confidence mean 80% accuracy **for all subgroups**?
+- Plot reliability diagrams per subgroup — gaps indicate calibration bias
+- Fix: group-specific Platt scaling or temperature calibration
+
+### Fairness Impossibility Results
+It is **provably impossible** to simultaneously satisfy all three when base rates differ across groups:
+1. **Demographic parity**: P(Ŷ=1|A=0) = P(Ŷ=1|A=1)
+2. **Equalized odds**: same TPR and FPR across groups
+3. **Predictive parity**: same precision across groups
+
+**Implication**: you must choose which fairness criterion matters most for your use case.
+
+### Fairness-Accuracy Trade-off
+- Enforcing fairness constraints often reduces overall accuracy
+- The magnitude depends on how different base rates are across groups
+- Communicate this trade-off explicitly to stakeholders
+
+---
+
+## Regulatory Context
+
+- **GDPR Article 22**: right to explanation for automated decisions that significantly affect individuals
+- **EU AI Act**: high-risk AI systems require transparency, human oversight, and documented risk management
+- **HIPAA**: medical AI decisions require audit trails and explainability
+- **Fair lending (ECOA/FCRA)**: must provide reasons for credit denials
+
+---
+
 ## Interview Key Points
 
 - **Interpretability vs Explainability?** Interpretability: inherent (e.g., linear models). Explainability: added post-hoc (SHAP, LIME for black boxes).
 - **When to use interpretable models?** High-stakes decisions (medical, legal, lending); regulatory requirements; need to understand feature relationships.
 - **SHAP vs LIME?** SHAP: global + local, theoretically sound, expensive. LIME: local only, fast, linear approximation.
+- **Are attention weights explanations?** Not necessarily — attention shows what the model "looks at" but doesn't prove causality. Use activation patching for causal claims.
+- **What are counterfactual explanations?** "What would need to change for a different outcome?" — actionable, user-friendly, GDPR-compliant.
+- **Can you satisfy all fairness criteria?** No — impossibility theorem. When base rates differ, you must choose between demographic parity, equalized odds, and predictive parity.
+- **What is a model card?** Standardized documentation: intended use, per-subgroup performance, limitations, ethical considerations. Required at most FAANG companies.
 - **Permutation importance bias?** Correlated features share importance; high-cardinality features ranked high. Use SHAP for more nuanced view.
 - **Attention in transformers = importance?** No. Attention says "which tokens matter for sequence"; doesn't mean causally important. Verify with gradients/perturbation.
 - **How to explain neural network?** Gradient-based (saliency, Integrated Gradients), attention, SHAP, LIME.

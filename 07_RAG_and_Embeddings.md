@@ -273,11 +273,58 @@ qa = RetrievalQA.from_chain_type(
 
 ---
 
+## RAG in Production: Failure Modes and Mitigations
+
+| Failure Mode | Symptoms | Mitigation |
+|---|---|---|
+| **Retrieval returns irrelevant docs** | Hallucinated answers, wrong topic | Improve embeddings, add reranker, hybrid search |
+| **Context window overflow** | Truncated context, lost info | Better chunking, compression (LLMLingua), summarization |
+| **Embedding domain mismatch** | Good general recall, poor domain recall | Fine-tune embedding model on domain data |
+| **Index staleness** | Answers based on outdated info | Incremental index updates, TTL on documents |
+| **Prompt injection via docs** | Model follows malicious instructions in retrieved text | Input sanitization, instruction hierarchy, output filtering |
+| **Cold start** | No relevant docs for new topics | Fallback to parametric knowledge, flag low-confidence |
+| **Reader ignores context** | Model generates from parametric memory despite good retrieval | Improve prompt template, add "answer only from context" instruction |
+
+## ColBERT and Late Interaction Models
+
+### Retrieval Model Spectrum
+| Model | Approach | Latency | Accuracy |
+|---|---|---|---|
+| **Bi-encoder** | Single vector per doc/query | Fastest (ANN lookup) | Good |
+| **ColBERT** | Token-level vectors, late interaction (MaxSim) | Medium | Better |
+| **Cross-encoder** | Joint encoding of query+doc | Slowest | Best |
+
+### ColBERT Details
+- Encode query and document tokens independently (like bi-encoder)
+- Score via **MaxSim**: for each query token, find max similarity with any doc token, sum across query tokens
+- Pre-computable document embeddings, but stores per-token vectors (more storage)
+- **ColBERTv2**: residual compression reduces storage 6-10×
+
+## Embedding Quantization and Compression
+
+- **Scalar quantization (INT8)**: reduce float32 → int8 per dimension. 4× storage savings, ~1% quality drop.
+- **Binary quantization**: reduce each dimension to 1 bit. 32× storage savings. Good for first-stage retrieval + rescore.
+- **Matryoshka Representation Learning (MRL)**: train embeddings where first d dimensions are a valid d-dimensional embedding. Use 256 dims for retrieval, full 1024 for reranking.
+- **Product Quantization (PQ)**: split vector into subvectors, quantize each independently. Used in FAISS IVF-PQ.
+
+## Semantic Caching
+
+- Cache responses by **query embedding similarity**, not exact string match
+- If a new query is within cosine distance threshold of a cached query, return cached response
+- Reduces LLM API costs and latency for repetitive queries
+- Tools: GPTCache, Redis with vector similarity search
+- **Trade-off**: threshold too low → cache misses; too high → stale/wrong cached answers
+
+---
+
 ## Interview Key Points
 
 - **Why is chunking important?** Chunks too large: noise dilutes relevant info; too small: missing context. Overlap prevents boundary information loss.
 - **When to use BM25 vs dense retrieval?** BM25 for exact keyword/entity match (rare terms, codes, product names); dense for paraphrase/semantic similarity. Hybrid typically best.
 - **What is the difference between bi-encoder and cross-encoder?** Bi-encoder encodes query and doc separately (precomputable); fast but less accurate. Cross-encoder encodes jointly; more accurate; used for reranking.
+- **What is ColBERT?** Late interaction model — encodes tokens independently (fast) but scores via token-level MaxSim (accurate). Between bi-encoder and cross-encoder.
+- **How to scale to 100M+ vectors?** Sharding across multiple FAISS/Milvus instances, IVF-PQ quantization, hierarchical indexes, incremental updates.
+- **How to prevent prompt injection via RAG?** Input sanitization of retrieved docs, instruction hierarchy (system > retrieved > user), output filtering with guardrail models.
 - **How do you handle long documents that exceed chunk size?** Parent-child chunking, summarize long docs, sliding window with overlap.
 - **What is HyDE?** Generate a hypothetical answer to the query, embed that answer, use its embedding for retrieval. Bridges query-document vocabulary gap.
 - **Why does RAG reduce hallucination?** LLM is constrained to generate from provided context; faithfulness can be checked against retrieved text; uncertainty reduces when answer is explicit in context.

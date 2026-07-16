@@ -379,11 +379,103 @@ LLMs perform worse on information in the middle of long contexts than at the sta
 
 ---
 
+## Scaling Laws
+
+### Chinchilla Scaling Laws (Hoffmann et al., 2022)
+- **Key finding**: compute-optimal training requires tokens ≈ 20 × parameters
+- A 10B param model should be trained on ~200B tokens for compute-optimal performance
+- **Power-law relationship**: `L(N, D) ≈ A/N^α + B/D^β + E` where N = params, D = data, L = loss
+- LLaMA 1 intentionally "over-trained" (more tokens than Chinchilla-optimal) to get better inference-time performance at smaller sizes
+
+### Emergent Capabilities
+- Abilities that appear abruptly at certain model scales (e.g., few-shot reasoning, chain-of-thought)
+- Debate: some argue emergence is a mirage of metric choice (Wei et al. vs Schaeffer et al.)
+- Practical implication: can't always predict which capabilities a larger model will gain
+
+### Scaling Implications
+- Training compute scales as ~6ND FLOPs (N params, D tokens)
+- Doubling model quality roughly requires 10× compute
+- Inference cost scales linearly with N — training is a one-time cost, inference is ongoing
+
+---
+
+## Pre-training Data
+
+### Data Quality > Quantity
+- **FineWeb** (HuggingFace): carefully filtered Common Crawl, outperforms larger unfiltered datasets
+- **DCLM**: data-centric approach to pre-training curation
+- Quality filters: perplexity filtering, deduplication, toxicity removal, language detection
+
+### Deduplication
+- **Exact dedup**: hash-based, removes identical documents
+- **Near-dedup (MinHash + LSH)**: detects near-identical content, critical for avoiding memorization
+- Impact: 3-5% of training data is typically exact duplicates; removing them improves generalization
+
+### Data Mixing
+- Ratio of code vs web vs books vs scientific text affects downstream capabilities
+- More code → better reasoning. More multilingual → better cross-lingual transfer.
+- Tokenization efficiency varies: English ≈ 1.3 tokens/word; CJK languages ≈ 2-3 tokens/word
+
+---
+
+## Reasoning Models and Test-Time Compute
+
+### Chain-of-Thought at Inference
+- Models generate explicit reasoning steps before answering
+- **Test-time compute scaling**: spending more compute at inference (longer chains, multiple samples) improves accuracy
+- Best-of-N sampling: generate N responses, pick best via reward model or self-consistency
+
+### o1/o3-Style Reasoning
+- Long internal thinking chains (may be hidden from user)
+- Uses search during generation (MCTS-like exploration of reasoning paths)
+- Trained to "think before answering" via RL on verifiable tasks (math, code)
+
+### DeepSeek R1 / GRPO
+- **GRPO (Group Relative Policy Optimization)**: RL without a separate reward model
+  - Sample multiple outputs for each prompt
+  - Score them (e.g., correctness for math)
+  - Compute advantage relative to group mean
+  - Update policy to increase probability of above-average outputs
+- **Cold-start RL**: train reasoning from base model without SFT stage
+- Key insight: RL alone can induce chain-of-thought reasoning behavior
+
+### Other RLHF Alternatives
+- **DPO (Direct Preference Optimization)**: implicit reward model from preference pairs. Simpler than PPO.
+- **ORPO**: combines SFT and alignment in a single stage via odds ratio penalty
+- **SimPO**: reference-free DPO variant using average log probability as reward
+- **Process Reward Models (PRMs)**: reward each reasoning step, not just the final answer. Better for math/code.
+
+---
+
+## LLM Security and Adversarial Attacks
+
+### Prompt Injection
+- **Direct**: user crafts input that overrides system instructions
+- **Indirect**: injected via retrieved documents (RAG poisoning) or tool outputs
+- **Mitigations**: input sanitization, output filtering, separate system/user contexts, instruction hierarchy
+
+### Jailbreaking Patterns
+- Role-playing ("pretend you're an unrestricted AI")
+- Encoding tricks (Base64, Caesar cipher)
+- Many-shot jailbreaking (providing many examples of desired behavior)
+- Gradient-based attacks (GCG: adversarial suffixes found via optimization)
+
+### Defenses
+- Constitutional AI: train model to self-critique and revise
+- Llama Guard / NeMo Guardrails: input/output classifiers
+- System prompt protection: instruction hierarchy, delimiters
+
+---
+
 ## Interview Key Points
 
 - **Why does temperature affect creativity?** Higher T flattens softmax → equal probability tokens → more diverse sampling
 - **Why use KL penalty in RLHF?** Prevents reward hacking; model shouldn't drift far from SFT behavior
 - **LoRA vs full fine-tuning trade-off?** LoRA: parameter efficient, less catastrophic forgetting, faster; full fine-tuning: higher ceiling, needs more compute
+- **What are Chinchilla scaling laws?** Compute-optimal training requires ~20 tokens per parameter. Training a small model on more data can beat a larger under-trained model.
+- **What is GRPO and how does it differ from PPO?** GRPO doesn't need a separate reward model — it uses group-relative advantages from sampled outputs. Simpler pipeline.
+- **When does RAG fail?** When retrieved chunks are irrelevant, context window overflows, embedding model mismatches the domain, or the reader ignores retrieved content.
+- **Process vs outcome reward models?** PRMs reward each step (better for multi-step reasoning); ORMs only reward the final answer (simpler but less signal).
 - **What is context window?** Max tokens the model can attend to at once; LLaMA3: 8K, Claude 3.5: 200K; limited by quadratic attention cost
 - **How does instruction tuning differ from pre-training?** Pre-training: predict next token on massive corpus; instruction tuning: supervised on (instruction, good response) pairs to align behavior
 - **What is flash attention?** Fused attention kernel that avoids materializing full NxN attention matrix; O(N) memory instead of O(N^2); enables longer context

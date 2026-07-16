@@ -720,6 +720,247 @@ dfs(node):
 
 ---
 
+## Monotonic Stack / Monotonic Deque Pattern
+
+**Core idea:** Maintain a stack where elements are in monotonically increasing or decreasing order. Each element is pushed and popped at most once → **O(n) total**.
+
+### Next Greater Element Template
+```python
+def next_greater_element(nums):
+    result = [-1] * len(nums)
+    stack = []  # stores indices
+    for i, num in enumerate(nums):
+        while stack and nums[stack[-1]] < num:
+            result[stack.pop()] = num
+        stack.append(i)
+    return result
+```
+
+### Monotonic Deque — Sliding Window Maximum
+```python
+from collections import deque
+def max_sliding_window(nums, k):
+    dq = deque()  # stores indices, front = max
+    result = []
+    for i, num in enumerate(nums):
+        while dq and dq[0] < i - k + 1:
+            dq.popleft()
+        while dq and nums[dq[-1]] < num:
+            dq.pop()
+        dq.append(i)
+        if i >= k - 1:
+            result.append(nums[dq[0]])
+    return result
+```
+
+### Canonical Problems
+- **Next Greater Element** (I, II, circular variant)
+- **Largest Rectangle in Histogram** — monotonic increasing stack of heights
+- **Trapping Rain Water** — monotonic decreasing stack or two-pointer
+- **Daily Temperatures** — next warmer day
+- **Sliding Window Maximum** — monotonic deque
+
+---
+
+## Bit Manipulation
+
+### Key Operations
+| Operation | Syntax | Use |
+|-----------|--------|-----|
+| AND | `a & b` | Mask bits, check if bit set |
+| OR | `a \| b` | Set bits |
+| XOR | `a ^ b` | Toggle bits, find unique element |
+| NOT | `~a` | Flip all bits |
+| Left shift | `a << n` | Multiply by 2ⁿ |
+| Right shift | `a >> n` | Divide by 2ⁿ |
+
+### Essential Tricks
+- **`n & (n-1)`** — clear lowest set bit. If result is 0 → n is a power of 2.
+- **`n & (-n)`** — isolate lowest set bit (used in Fenwick trees).
+- **`a ^ a = 0`** — XOR identity. Find single number in array where all others appear twice.
+- **Brian Kernighan's bit count:** count set bits in O(set bits) by repeatedly clearing lowest set bit.
+
+```python
+def count_bits(n):
+    count = 0
+    while n:
+        n &= n - 1  # clear lowest set bit
+        count += 1
+    return count
+```
+
+### Bitmask DP
+Represent subsets as integers. For a set of n elements, iterate over all 2ⁿ subsets.
+```python
+# Enumerate all subsets of a bitmask
+mask = (1 << n) - 1  # all n bits set
+sub = mask
+while sub:
+    # process subset 'sub'
+    sub = (sub - 1) & mask
+```
+
+### Common Problems
+- Single Number (XOR all elements)
+- Counting Bits (DP: `dp[i] = dp[i >> 1] + (i & 1)`)
+- Subsets (bitmask enumeration)
+- Hamming Distance (`bin(x ^ y).count('1')`)
+- TSP with bitmask DP: `dp[mask][i]` = min cost visiting cities in mask, ending at i
+
+---
+
+## Prefix Sum and Difference Arrays
+
+### 1D Prefix Sum
+```python
+# Build: O(n), Query any range sum: O(1)
+prefix = [0] * (len(arr) + 1)
+for i in range(len(arr)):
+    prefix[i+1] = prefix[i] + arr[i]
+# Sum of arr[l..r] = prefix[r+1] - prefix[l]
+```
+
+### Subarray Sum Equals K (Hashmap Technique)
+```python
+def subarray_sum(nums, k):
+    count, curr_sum = 0, 0
+    prefix_counts = {0: 1}
+    for num in nums:
+        curr_sum += num
+        count += prefix_counts.get(curr_sum - k, 0)
+        prefix_counts[curr_sum] = prefix_counts.get(curr_sum, 0) + 1
+    return count
+```
+
+### 2D Prefix Sum
+```python
+# Build 2D prefix sum matrix for O(1) rectangle queries
+# sum of rect (r1,c1)→(r2,c2) = P[r2+1][c2+1] - P[r1][c2+1] - P[r2+1][c1] + P[r1][c1]
+```
+
+### Difference Array
+- **O(1) range updates**, O(n) reconstruction.
+- To add val to range [l, r]: `diff[l] += val; diff[r+1] -= val`
+- Reconstruct with prefix sum of diff array.
+- Use case: multiple range update queries then single read pass.
+
+---
+
+## Advanced DP Patterns
+
+### Interval DP
+Solve subproblems defined by intervals [i, j]. Iterate by length, then start index, try all split points.
+```python
+# Matrix Chain Multiplication / Burst Balloons pattern
+for length in range(2, n+1):
+    for i in range(n - length + 1):
+        j = i + length - 1
+        for k in range(i, j):  # split point
+            dp[i][j] = min(dp[i][j], dp[i][k] + dp[k+1][j] + cost(i, k, j))
+```
+
+### Bitmask DP
+Represent visited/chosen subset as bitmask integer.
+```python
+# TSP: dp[mask][i] = min cost to visit cities in 'mask' ending at city i
+for mask in range(1 << n):
+    for i in range(n):
+        if not (mask & (1 << i)): continue
+        for j in range(n):
+            if mask & (1 << j): continue
+            new_mask = mask | (1 << j)
+            dp[new_mask][j] = min(dp[new_mask][j], dp[mask][i] + dist[i][j])
+```
+
+### Tree DP
+DFS on tree, compute DP values bottom-up.
+```python
+# House Robber III: for each node, track (rob_this, skip_this)
+def dfs(node):
+    if not node: return (0, 0)
+    left = dfs(node.left)
+    right = dfs(node.right)
+    rob = node.val + left[1] + right[1]
+    skip = max(left) + max(right)
+    return (rob, skip)
+```
+
+### Digit DP
+Count numbers up to N with certain digit properties. Track (position, tight_constraint, accumulated_state).
+- Used for: count numbers with digit sum = K, numbers without consecutive same digits, etc.
+
+---
+
+## Amortized Analysis
+
+**Concept:** Some operations are expensive but happen infrequently enough that the average cost per operation is low.
+
+### Examples
+| Operation | Worst case | Amortized | Why |
+|-----------|-----------|-----------|-----|
+| Dynamic array append | O(n) when doubling | **O(1)** | Doubling costs O(n) but happens every n insertions |
+| Stack multipop | O(n) per multipop | **O(1)** per operation | Each element pushed/popped at most once total |
+| Union-Find with path compression | O(log n) | **O(α(n)) ≈ O(1)** | Inverse Ackermann via path compression + union by rank |
+
+### Methods
+- **Aggregate analysis:** total cost of n operations / n
+- **Accounting method:** assign amortized cost per operation, "bank" surplus for expensive ops
+- **Potential method:** define potential function Φ, amortized cost = actual cost + ΔΦ
+
+### Interview tip
+When asked "isn't ArrayList.add() O(n)?", explain: "Worst case is O(n) when the array doubles, but this happens once every n insertions. By aggregate analysis, n insertions cost O(n) total, so amortized cost per insertion is O(1)."
+
+---
+
+## Two-Heap Pattern
+
+Use a **max-heap for the lower half** and **min-heap for the upper half** to maintain the running median in O(log n) per insertion.
+
+```python
+import heapq
+
+class MedianFinder:
+    def __init__(self):
+        self.lo = []  # max-heap (negate values)
+        self.hi = []  # min-heap
+
+    def addNum(self, num):
+        heapq.heappush(self.lo, -num)
+        heapq.heappush(self.hi, -heapq.heappop(self.lo))
+        if len(self.hi) > len(self.lo):
+            heapq.heappush(self.lo, -heapq.heappop(self.hi))
+
+    def findMedian(self):
+        if len(self.lo) > len(self.hi):
+            return -self.lo[0]
+        return (-self.lo[0] + self.hi[0]) / 2
+```
+
+### Applications
+- **Find Median from Data Stream** (LeetCode 295)
+- **Sliding Window Median** (LeetCode 480)
+- **IPO** — maximize capital with k investments
+
+---
+
+## ML/AI Interview Bridge — DSA Meets ML
+
+| DSA Concept | ML Application |
+|---|---|
+| Hash tables + random projection | Locality-Sensitive Hashing (LSH) for approximate nearest neighbor |
+| BFS with pruning | Beam search in sequence generation (LLMs, NMT) |
+| Priority queues (heaps) | Top-K sampling, best-first search in inference |
+| Tries | Tokenizer vocabulary lookup (BPE merge rules) |
+| Graphs + topological sort | Computation graphs in autograd (PyTorch backward pass) |
+| Dynamic programming | Viterbi algorithm (HMMs, CRF decoding), CTC loss |
+| Divide and conquer | MapReduce paradigm, distributed data sharding |
+| Segment trees / Fenwick trees | Efficient range queries in feature stores |
+| Union-Find | Connected components in entity resolution / deduplication |
+| Monotonic stack | Efficient attention masking, sequence processing |
+| Prefix sums | Cumulative distribution functions, integral images |
+
+---
+
 ## Interview Tips
 
 1. **Clarify Requirements:**
@@ -766,11 +1007,20 @@ dfs(node):
 | Grouping | Hash Map | Iteration |
 | Frequency | Hash Map/Counter | Count |
 | Top K | Heap | Heap operations |
+| Running Median | Two Heaps (max+min) | Push/pop/balance |
+| Next Greater/Smaller | Monotonic Stack | Single pass O(n) |
+| Sliding Window Max/Min | Monotonic Deque | Deque maintenance |
+| Range Sum Query | Prefix Sum Array | Precompute + O(1) lookup |
+| Range Updates | Difference Array | Batch update + reconstruct |
+| Single Unique Element | - | XOR all elements |
+| Subset Enumeration | Bitmask | Bitmask DP |
 | Relationships | Graph | DFS/BFS |
 | Dependencies | Graph | Topological Sort |
 | Shortest Path | Graph | Dijkstra/BFS |
 | Substring | String/Trie | KMP/DP |
 | Subsequence | Array | DP |
+| Interval Problems | Array | Interval DP |
+| Tree Optimization | Tree | Tree DP (post-order DFS) |
 | Combination/Permutation | - | Backtracking |
 | Overlapping Subproblems | - | DP |
 
