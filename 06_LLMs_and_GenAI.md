@@ -467,6 +467,125 @@ LLMs perform worse on information in the middle of long contexts than at the sta
 
 ---
 
+## LLM Guardrails — Building and Using
+
+### What Are Guardrails?
+Programmatic checks applied **before** (input guardrails) and **after** (output guardrails) LLM calls to enforce safety, quality, and compliance policies. They sit as middleware in the LLM pipeline.
+
+### Architecture Pattern
+```
+User Input → Input Guardrails → LLM → Output Guardrails → Response
+                 ↓ (block/rewrite)           ↓ (block/rewrite/fallback)
+```
+
+### Input Guardrails
+| Guardrail | How It Works | When to Use |
+|-----------|-------------|-------------|
+| **Topic restriction** | Classifier (fine-tuned BERT or LLM-as-judge) rejects off-topic prompts | Customer support bots, domain-specific assistants |
+| **PII detection/redaction** | Regex + NER (spaCy, Presidio) to detect names, SSNs, emails; mask before sending to LLM | Healthcare, finance, any regulated domain |
+| **Prompt injection detection** | Classifier trained on injection examples; heuristic checks for instruction overrides | Any user-facing LLM application |
+| **Token budget check** | Count tokens (tiktoken / tokenizer); reject or truncate if over budget | Cost control, latency control |
+| **Rate limiting / abuse detection** | Track request frequency, repeated jailbreak attempts per user | Production deployments |
+
+### Output Guardrails
+| Guardrail | How It Works | When to Use |
+|-----------|-------------|-------------|
+| **Hallucination / grounding check** | NLI model (entailment score) verifies output is supported by context | RAG systems, factual QA |
+| **Content filtering** | Toxicity classifier (Perspective API, custom model); block or flag harmful output | All user-facing apps |
+| **Structured output validation** | JSON schema validation, regex matching, Pydantic parsing | Tool calling, API responses |
+| **Citation verification** | Check that cited sources actually exist and support the claim | Research, medical, legal |
+| **PII leakage check** | Re-scan output for PII that may have been generated (not just echoed) | Regulated domains |
+
+### Guardrail Frameworks
+- **NVIDIA NeMo Guardrails**: define rails in Colang (domain-specific language); supports topical, safety, and dialog rails; programmable flows
+- **Guardrails AI (guardrails-ai)**: Python validators wrapping LLM calls; built-in validators for toxicity, PII, JSON, hallucination; composable via `Guard` object
+- **AWS Bedrock Guardrails**: managed service; content filters, denied topics, word/phrase filters, PII redaction, grounding checks with configurable thresholds
+- **Llama Guard**: fine-tuned LLaMA model that classifies input/output into safety categories; works as an input/output classifier in pipeline
+
+### Building Custom Guardrails — Key Design Decisions
+1. **Classifier vs LLM-as-judge**: classifier (BERT-based) is faster/cheaper (~5ms); LLM-as-judge is more flexible but adds latency (~500ms+) and cost
+2. **Blocking vs flagging**: hard block (reject response) vs soft flag (log + return with warning); depends on risk tolerance
+3. **Synchronous vs async**: sync guardrails add latency to every call; async guardrails run in background and flag retroactively
+4. **Cascading**: chain multiple guardrails; fail-fast on first violation vs run all and aggregate
+5. **Fallback responses**: predefined safe responses when guardrail triggers ("I can't help with that" vs redirect to human)
+
+### Guardrails in Production — Gotchas
+- Guardrail latency adds up: 3 guardrails × 50ms each = 150ms overhead per request
+- False positives erode user trust; tune thresholds on real traffic, not synthetic data
+- Adversarial users iterate against your guardrails — they need updating over time
+- Guardrails are defense-in-depth, NOT a replacement for alignment training (RLHF/CAI)
+
+### Interview Questions
+- **Why not just rely on RLHF for safety?** RLHF shapes model tendencies but can't guarantee behavior; guardrails provide deterministic enforcement at inference time
+- **Guardrails AI vs NeMo Guardrails?** Guardrails AI: Python-native validators, composable, good for structured output; NeMo: Colang-based dialog flows, better for conversational rail design
+- **How do you handle guardrail latency?** Run input/output guardrails in parallel where independent; use fast classifiers over LLM-as-judge; cache frequent decisions; async for non-critical checks
+
+---
+
+## Prompt Token Optimization — Keeping Usage Small
+
+### Why It Matters
+- **Cost**: API pricing is per-token (input tokens often cheaper than output, but still add up at scale)
+- **Latency**: time-to-first-token scales with prompt length (prefill phase); longer prompts = slower responses
+- **Context window**: finite budget shared between prompt and generation; bloated prompts leave less room for output
+- **Lost-in-the-middle**: models attend worse to information in the middle of long contexts
+
+### Techniques to Reduce Prompt Tokens
+
+#### 1. Prompt Engineering for Conciseness
+- Remove filler words, redundant instructions, and verbose examples
+- Use structured formats (tables, key:value) instead of prose
+- Consolidate repeated instructions into a single system prompt
+- "Show, don't tell": one clear example often replaces paragraphs of instructions
+- **Measured impact**: well-edited prompts are often 30-50% shorter with same performance
+
+#### 2. Few-Shot → Zero-Shot (When Possible)
+- Each few-shot example costs tokens; evaluate if zero-shot + clear instructions performs comparably
+- If few-shot is needed: use the minimum number of examples; pick short, representative ones
+- **Dynamic few-shot**: retrieve relevant examples per query (not fixed set) using embedding similarity
+
+#### 3. Prompt Caching (Provider-Level)
+- **Anthropic**: cache_control breakpoints; cached prefill tokens cost 90% less; cache has 5-min TTL
+- **OpenAI**: automatic prefix caching; 50% discount on cached input tokens
+- **Design for caching**: put static content (system prompt, instructions, schema) first; dynamic content (user query) last; cache hits require exact prefix match
+- **Key insight**: prompt structure matters — reorder so cacheable content is at the front
+
+#### 4. Context Compression
+- **LLMLingua / LongLLMLingua**: use small LM to score token importance; drop low-information tokens; 3-20x compression with <5% quality loss
+- **Summarize-then-query**: summarize long documents before including in prompt; trade one-time summarization cost for repeated savings
+- **Summary memory for multi-turn**: compress old conversation turns into a summary; keep only recent turns verbatim
+
+#### 5. RAG Instead of Stuffing
+- Retrieve only relevant chunks (top-k) instead of loading entire documents into context
+- Smaller chunk sizes (256-512 tokens) with good retrieval > large chunks with noise
+- Re-ranking (cross-encoder) after retrieval filters out irrelevant chunks before they hit the prompt
+- **Token savings**: 100K document → 3 relevant chunks × 512 tokens = 1.5K tokens
+
+#### 6. Structured Prompt Design
+- **System/user separation**: put reusable instructions in system prompt (cached); per-request data in user prompt
+- **Schema-driven prompts**: define output schema concisely (JSON schema) instead of describing format in prose
+- **Tool/function calling**: let the API handle tool descriptions natively rather than embedding them in prompt text
+- **Avoid restating the obvious**: don't tell the model what it already knows from context
+
+#### 7. Token-Aware Engineering
+- Use shorter variable/field names in structured prompts (within reason)
+- Prefer common words (fewer tokens) over rare synonyms: "use" (1 token) vs "utilize" (1-2 tokens)
+- Be aware: numbers, code, and non-English text tokenize less efficiently
+- Whitespace and formatting tokens add up: `\n\n\n` costs tokens; minimize unnecessary blank lines
+
+### Cost Optimization Beyond Prompt Shrinking
+- **Model routing**: use cheaper/smaller models for simple queries; route complex ones to larger models
+- **Batch API**: 50% discount for non-real-time workloads (Anthropic, OpenAI)
+- **Output token limits**: set `max_tokens` appropriately; don't request 4096 when you need 200
+- **Streaming + early stopping**: stop generation when you detect the answer is complete
+
+### Interview Questions
+- **How would you reduce LLM API costs by 10x?** Prompt caching (structure for cache hits), model routing (cheap model for easy queries), RAG (retrieve not stuff), batch API for offline, compress/summarize long context
+- **Prompt caching vs semantic caching?** Prompt caching: exact prefix match at provider level, automatic discount; semantic caching: application-level, cache responses for semantically similar queries, requires embedding + similarity threshold, risk of stale/wrong cached answers
+- **When does context compression hurt?** When the compressed prompt drops tokens critical to the task; compression works best on redundant/verbose content; always evaluate on your specific task after compression
+
+---
+
 ## Interview Key Points
 
 - **Why does temperature affect creativity?** Higher T flattens softmax → equal probability tokens → more diverse sampling
