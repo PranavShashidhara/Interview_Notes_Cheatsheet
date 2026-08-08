@@ -26,6 +26,10 @@ Comprehensive interview preparation hub for AI/ML, Data Science, and SWE roles. 
 - [16_Recommendation_Systems](./16_Recommendation_Systems.md)
 - [17_Feature_Engineering_and_Selection](./17_Feature_Engineering_and_Selection.md)
 - [18_Explainability_and_Interpretability](./18_Explainability_and_Interpretability.md)
+- [kernel_coding_answers](./kernel_coding_answers.md)
+- [kernel_coding_question](./kernel_coding_question.md)
+- [kernel_interview_answers](./kernel_interview_answers.md)
+- [kernel_interview question](./kernel_interview question.md)
 
 ### Advanced Topics
 
