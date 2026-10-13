@@ -110,33 +110,120 @@ Max threads per block: 1024
 +--------------------------------------------------+
 ```
 
-Path from a thread to memory: `Thread -> Registers -> Shared Mem/L1 -> L2 -> HBM`.
+### Where everything physically lives
+
+Understanding what is **on the SM** vs **off the SM** is critical:
+
+```
++---------------------------------------------------------------+
+| GPU Die                                                       |
+|                                                               |
+|  +-------------------------+  +-------------------------+     |
+|  | SM 0 (on-chip)          |  | SM 1 (on-chip)          |     |
+|  |  Registers (~1 cycle)   |  |  Registers (~1 cycle)   |     |
+|  |  Warp Schedulers        |  |  Warp Schedulers        |     |
+|  |  CUDA Cores, Tensor     |  |  CUDA Cores, Tensor     |     |
+|  |  Cores, SFUs, LD/ST     |  |  Cores, SFUs, LD/ST     |     |
+|  |  +-----------+          |  |  +-----------+          |     |
+|  |  | Unified   |          |  |  | Unified   |          |     |
+|  |  | SRAM pool |          |  |  | SRAM pool |          |     |
+|  |  | 228 KB    |          |  |  | 228 KB    |          |     |
+|  |  | ┌───────┐ |          |  |  | ┌───────┐ |          |     |
+|  |  | │Shared │ |          |  |  | │Shared │ |          |     |
+|  |  | │Memory │<-- ON SM   |  |  | │Memory │ |          |     |
+|  |  | ├───────┤ |          |  |  | ├───────┤ |          |     |
+|  |  | │L1     │ |          |  |  | │L1     │ |          |     |
+|  |  | │Cache  │<-- ON SM   |  |  | │Cache  │ |          |     |
+|  |  | └───────┘ |          |  |  | └───────┘ |          |     |
+|  |  +-----------+          |  |  +-----------+          |     |
+|  +-------------------------+  +-------------------------+     |
+|                ... (132 SMs total on H100) ...                |
+|                                                               |
+|  +----------------------------------------------------------+ |
+|  | L2 Cache (50 MB) — shared, NOT on any SM    <-- OFF SM    | |
+|  +----------------------------------------------------------+ |
+|  +----------------------------------------------------------+ |
+|  | Memory Controllers → HBM (80 GB)           <-- OFF CHIP  | |
+|  +----------------------------------------------------------+ |
++---------------------------------------------------------------+
+```
+
+**Key point:** Shared memory and L1 cache are the **same physical SRAM** on the SM. You configure the split — more shared memory means less L1, and vice versa. Both are on-chip, on the SM itself, which is why they're fast (~20-30 cycles). L2 is on the GPU die but is a separate structure shared by all SMs (~200 cycles). HBM is off-chip entirely (~400-600 cycles).
+
+Path from a thread to memory: `Thread -> Registers (on SM) -> Shared Mem/L1 (on SM) -> L2 (on die, off SM) -> HBM (off chip)`.
+
+### Glossary of GPU hardware units
+
+| Abbreviation | Full Name | What It Is |
+|---|---|---|
+| **GPC** | Graphics Processing Cluster | Top-level grouping on the die. H100 has 8 GPCs. Contains multiple TPCs. Determines Thread Block Cluster co-scheduling in Hopper. |
+| **TPC** | Texture Processing Cluster | Contains 2 SMs + shared texture units. The grouping level for texture filtering hardware. Each GPC has ~9 TPCs (H100). |
+| **SM** | Streaming Multiprocessor | The core compute unit. All your kernel code runs here. Contains warp schedulers, CUDA cores, Tensor Cores, registers, shared memory, L1 cache. |
+| **SFU** | Special Function Unit | Hardware unit inside each SM quadrant (4 SFUs per quadrant, 16 per SM) that computes transcendental functions: `sinf()`, `cosf()`, `expf()`, `logf()`, `rsqrtf()`, reciprocal (`1/x`). Much faster than computing these in software, but lower throughput than CUDA cores — only 4 SFUs vs 32 FP32 cores per quadrant. Using many SFUs in a kernel can become a bottleneck. |
+| **LD/ST** | Load/Store Unit | Issues memory load and store operations. 4 per SM quadrant (16 per SM). Handles address generation and feeds data to/from the cache hierarchy. |
+| **FP32 Core** | CUDA Core (FP32) | Scalar floating-point unit. Executes one FP32 operation per clock per core. 32 per quadrant, 128 per SM. |
+| **FP64 Core** | Double-Precision Core | Scalar double-precision unit. 16 per quadrant, 64 per SM on H100. Half the FP32 count, so FP64 throughput is ~half of FP32 (not always — depends on architecture). |
+| **INT32 Core** | Integer Core | Executes integer operations. 16 per quadrant, 64 per SM. On Volta+ can execute INT32 concurrently with FP32. |
+| **Tensor Core** | Tensor Core | Matrix multiply-accumulate unit. 1 per quadrant, 4 per SM. Operates on tiles (e.g., 16×16×16) of FP16/BF16/TF32/FP8/INT8, accumulating into FP32. Orders of magnitude faster than FP32 cores for matrix math. |
 
 ### GPC vs TPC vs SM hierarchy
 
-**GPC (Graphics Processing Cluster)** is the top-level grouping. H100 has 8 GPCs, each containing multiple TPCs.
+```
+GPU Die
+├── GPC 0 (Graphics Processing Cluster)
+│   ├── TPC 0 (Texture Processing Cluster)
+│   │   ├── SM 0 (Streaming Multiprocessor) ← your code runs here
+│   │   └── SM 1
+│   ├── TPC 1
+│   │   ├── SM 2
+│   │   └── SM 3
+│   ├── ... (~9 TPCs per GPC)
+│   └── Raster Engine (graphics, not used in compute)
+├── GPC 1
+│   └── ... (same structure)
+├── ... (8 GPCs total on H100, 132 of 144 SMs enabled)
+├── L2 Cache (50 MB, shared by all SMs across all GPCs)
+├── Memory Controllers → HBM3
+├── GigaThread Engine (global thread block scheduler)
+├── NVLink 4.0 interface
+└── PCIe Gen5 interface
+```
 
-**TPC (Texture Processing Cluster)** contains 2 SMs. It is the scheduling and dispatch unit — the hardware assigns thread blocks to SMs, and TPCs form the grouping for texture units.
+**GPC (Graphics Processing Cluster)** is the top-level grouping. H100 has 8 GPCs, each containing ~9 TPCs (~18 SMs). GPCs are mostly transparent for compute workloads, but they matter for:
+- **Thread Block Clusters (Hopper):** blocks in a cluster are co-scheduled on SMs within the same GPC
+- **L1 → L2 routing:** SMs within the same GPC share closer routing to their L2 partition
+
+**TPC (Texture Processing Cluster)** contains 2 SMs plus shared texture filtering hardware. In compute workloads, the TPC grouping is mostly invisible — you interact with SMs. The texture units in the TPC are used when you access texture memory or use `__ldg()` (read-only cache path).
 
 **SM (Streaming Multiprocessor)** is the actual compute unit. All your kernel code runs on SMs. Each SM:
 - Has its own register file (65536 x 32-bit), shared memory, L1 cache, warp schedulers
 - Can run up to 2048 concurrent threads (64 warps)
 - Is assigned one or more thread blocks by the hardware scheduler
 - Has 4 Tensor Cores (Hopper) for matrix operations
+- Contains 128 FP32 cores, 64 FP64 cores, 64 INT32 cores, 16 SFUs, 16 LD/ST units
 
 Why it matters for kernels:
 - **L2 is global across all SMs.** Unlike AMD's per-XCD L2, NVIDIA's single L2 means any SM can hit data cached by any other SM. This simplifies data placement reasoning.
 - **Thread block scheduling is hardware-managed.** The GigaThread engine distributes blocks to SMs. You don't control which SM a block lands on (but can influence it with cluster launches in Hopper).
 - **Hopper introduced Thread Block Clusters** (SM 9.0): groups of thread blocks guaranteed to be co-scheduled on SMs in the same GPC, enabling efficient shared memory access across blocks via distributed shared memory.
 
-### Inside one SM
+### Inside one SM (detailed)
 
-- **4 warp schedulers** per SM, each managing a set of warps.
+- **4 warp schedulers** per SM (one per quadrant), each managing up to 16 warps. Each scheduler can issue 1 instruction per clock to its execution units.
 - **Warp size = 32 threads** (AMD wavefront = 64). This affects reductions, shuffles, and ballot masks (32-bit masks).
-- **Tensor Cores** execute MMA (matrix multiply-accumulate) instructions for FP16/BF16/FP8/TF32/INT8 tiles via `wmma` or `mma.sync` PTX instructions.
-- **Shared memory**: up to 228 KB per SM on H100 (configurable split with L1). Organized in 32 banks of 4 bytes each. Watch for bank conflicts.
-- **L1 cache**: part of the unified shared/L1 pool.
-- **Register file**: 65536 x 32-bit registers per SM, partitioned across all resident warps. More registers per thread = fewer warps per SM (lower occupancy).
+- **CUDA Cores (FP32)**: 128 per SM (32 per quadrant). Each executes one single-precision floating-point or integer operation per clock. These are the workhorses for element-wise operations (vec_add, activation functions, etc.).
+- **FP64 Cores**: 64 per SM (16 per quadrant). Double-precision. Half the throughput of FP32 on H100.
+- **INT32 Cores**: 64 per SM. Can execute concurrently with FP32 cores (since Volta) — the scheduler can issue an FP32 instruction and an INT32 instruction in the same clock to different execution units.
+- **Tensor Cores** (4th gen on Hopper): 4 per SM (1 per quadrant). Execute MMA (matrix multiply-accumulate) instructions for FP16/BF16/FP8/TF32/INT8 tiles via `wmma` or `mma.sync` PTX instructions. This is where the peak TFLOP/s numbers come from — FP32 cores alone cannot approach Tensor Core throughput.
+- **SFUs (Special Function Units)**: 16 per SM (4 per quadrant). Handle transcendental math: `sinf`, `cosf`, `expf`, `logf`, `rsqrtf`, reciprocal. These are **lower throughput** than CUDA cores — if your kernel is heavy on `expf()` (like softmax), SFU throughput can become the bottleneck. The profiler metric `sm__inst_executed_pipe_sfu` shows SFU utilization.
+- **LD/ST (Load/Store) Units**: 16 per SM (4 per quadrant). Generate addresses and issue memory transactions. Each unit handles one address per clock. If your kernel does many loads per instruction (e.g., gather operations), LD/ST units can limit throughput.
+- **Shared memory / L1 cache**: up to 228 KB per SM on H100. This is a **single unified SRAM pool** physically on the SM. You configure the split between shared memory (programmer-managed) and L1 cache (hardware-managed):
+  ```cpp
+  // Request more shared memory, less L1
+  cudaFuncSetAttribute(kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100); // percent for shared
+  ```
+  Organized in 32 banks of 4 bytes each. Watch for bank conflicts.
+- **Register file**: 65536 x 32-bit registers per SM, partitioned across all resident warps. More registers per thread = fewer warps per SM (lower occupancy). Example: 128 registers per thread × 32 threads per warp = 4096 registers per warp → 65536/4096 = 16 warps max (25% occupancy if max is 64).
 - **Max threads per block**: 1024.
 - **Max blocks per SM**: 32 (Hopper), 16–32 depending on architecture.
 
@@ -325,10 +412,263 @@ ncu --set roofline -o matmul_roofline ./matmul
 ncu-ui matmul_roofline.ncu-rep   # open the GUI to see the roofline chart
 ```
 
+### Instruction scheduling and latency hiding
+
+The GPU hides memory and instruction latency by running many warps concurrently on each SM. When one warp stalls (waiting for a memory load, for example), the warp scheduler instantly switches to another ready warp — no context-switch cost because each warp has its own registers.
+
+**How warp schedulers work (Hopper):**
+- Each SM has **4 warp schedulers**, one per quadrant.
+- Each scheduler can issue **1 instruction per clock** to its execution units.
+- Each scheduler manages a pool of warps (up to 16 warps per scheduler, 64 total per SM).
+- Scheduling is **greedy**: the scheduler picks a ready warp (one whose operands are available) and issues its next instruction. If no warp is ready, the scheduler stalls — this is wasted cycles.
+
+```
+Clock 0:  Scheduler 0 issues WARP_A instruction (memory load, ~400 cycle latency)
+Clock 1:  Scheduler 0 issues WARP_B instruction (WARP_A still waiting for data)
+Clock 2:  Scheduler 0 issues WARP_C instruction
+...
+Clock N:  WARP_A's data arrives, scheduler issues WARP_A's next instruction
+```
+
+**Latency numbers (approximate, H100):**
+- Register access: ~1 cycle
+- Shared memory: ~20–30 cycles
+- L1 cache hit: ~30 cycles
+- L2 cache hit: ~200 cycles
+- HBM (global memory): ~400–600 cycles
+
+**Instruction-level parallelism (ILP):** Within a single warp, independent instructions can be pipelined. If instruction B doesn't depend on instruction A's result, the hardware can issue B before A completes:
+
+```cpp
+// Low ILP: each line depends on the previous
+float a = x[i];
+float b = a * 2.0f;     // depends on a
+float c = b + 1.0f;     // depends on b
+
+// High ILP: independent work interleaved
+float a = x[i];
+float d = y[i];          // independent of a — can issue in parallel
+float b = a * 2.0f;
+float e = d * 3.0f;      // independent of b
+```
+
+**Why occupancy matters for latency hiding:**
+- If you have 64 warps per SM and each warp stalls for 400 cycles, but each issues 1 instruction before stalling, you need at least 400/1 = 400 warps to keep the scheduler busy. You can't get 400, so you also need ILP within each warp.
+- In practice, 50%+ occupancy is usually sufficient for memory-bound kernels. Compute-bound kernels can sometimes do well at lower occupancy if ILP is high.
+- The occupancy calculator (Nsight Compute or `cudaOccupancy*` APIs) tells you the theoretical maximum; the profiler tells you actual achieved occupancy.
+
+**What the profiler shows:**
+- `sm__warps_active.avg.pct_of_peak_sustained_elapsed` — achieved occupancy
+- `smsp__warp_issue_stalled_*` — why warps are stalling (memory, compute, synchronization, etc.)
+- `sm__inst_executed_pipe_*` — instructions issued per pipe (FP32, FP64, tensor, etc.)
+
+### Cache hierarchy details
+
+**Cache line sizes:**
+- **L1 cache**: 128-byte cache lines. A warp load that spans one 128-byte line is one transaction. Misaligned or scattered access causes multiple transactions.
+- **L2 cache**: 128-byte cache lines, unified across all SMs.
+
+**L1 cache behavior (since Volta):**
+- L1 and shared memory share a unified on-chip memory pool. On H100, this pool is 228 KB per SM.
+- By default, global loads go through L1. You can control this with `__ldg()` (read-only, uses texture cache path) or compiler hints.
+- The L1 is **write-through** for global memory writes on most architectures — writes go to L2, not cached in L1.
+- Shared memory operations bypass the cache entirely (they use the same SRAM but as explicitly managed memory).
+
+**L2 cache:**
+- Shared by all SMs, **write-back** (writes are cached and flushed later).
+- On H100: 50 MB. On A100: 40 MB.
+- **L2 persistence control** (Ampere+): you can hint that certain data should stay in L2 longer:
+  ```cpp
+  cudaAccessPropertyWindow window = {};
+  window.base_ptr = d_data;
+  window.num_bytes = bytes;
+  window.hitRatio = 1.0f;      // try to keep all of this in L2
+  window.hitProp = cudaAccessPropertyPersisting;
+  window.missProp = cudaAccessPropertyStreaming;
+  cudaCtxSetAccessPolicyWindow(&window);
+  ```
+  This is useful when a small buffer is read repeatedly (e.g., an embedding table).
+
+**L2 partitioning (Hopper):**
+- H100 can partition L2 between SMs for better isolation in MIG (Multi-Instance GPU) mode.
+
+**Cache coherence:**
+- Within a kernel launch, L1 caches across SMs are **not coherent** with each other. Thread block A on SM 0 and thread block B on SM 1 cannot communicate through L1.
+- L2 provides coherence for global memory: if block A writes to global memory and a `__threadfence()` is issued, subsequent reads by other blocks will see the update (after they miss L1 and hit L2).
+- `__threadfence()` ensures writes are visible to other blocks. `__threadfence_block()` ensures writes are visible within the block. `__threadfence_system()` ensures writes are visible to the host and other GPUs.
+
+### Constant memory and texture memory
+
+**Constant memory:**
+- 64 KB total, read-only from the device, cached in a dedicated constant cache per SM.
+- Optimized for **broadcast access**: when all threads in a warp read the same address, it's served in one cycle. When threads read different addresses, accesses are serialized.
+- Best for: lookup tables, kernel parameters, coefficients that all threads share.
+
+```cpp
+__constant__ float filter[256];  // declare in global scope
+
+// Host side: copy to constant memory
+cudaMemcpyToSymbol(filter, h_filter, 256 * sizeof(float));
+
+// Device side: all threads reading filter[0] = one cycle (broadcast)
+// Threads reading filter[threadIdx.x] = serialized if > 1 unique address per warp
+```
+
+**Texture memory:**
+- Uses the **texture cache** (separate from L1), optimized for 2D spatial locality.
+- Read-only from kernels (bindless texture objects since CUDA 5.0).
+- Benefits: hardware interpolation, automatic boundary handling (clamp/wrap), and the 2D cache is better than L1 for spatially local 2D access patterns.
+- Modern CUDA code mostly uses `__ldg()` for read-only global loads (uses the same hardware path) rather than explicit texture objects, unless 2D interpolation is needed.
+
+```cpp
+// __ldg: read-only load through texture cache path (no 2D features, just caching)
+float val = __ldg(&input[idx]);  // hints the compiler that input[idx] is read-only
+```
+
+### Virtual memory and TLB
+
+GPUs use virtual memory with their own page tables and TLBs (Translation Lookaside Buffers), similar to CPUs but with GPU-specific details.
+
+**Page sizes:**
+- **Small pages**: 4 KB (like CPU)
+- **Large pages**: 2 MB (used by default for `cudaMalloc` allocations on most architectures)
+- Large pages reduce TLB pressure: a 2 MB page covers 512x more memory than a 4 KB page, so fewer TLB entries are needed.
+
+**TLB hierarchy:**
+```
+Thread → L1 TLB (per SM) → L2 TLB (shared) → Page Table Walk (very slow)
+```
+
+- **L1 TLB**: small, per-SM, fast. Covers the most recently used pages for that SM.
+- **L2 TLB**: larger, shared across SMs. Covers more pages but slower.
+- **Page table walk**: if both TLBs miss, the GPU must walk the page table in memory. This adds hundreds of cycles to every memory access until the TLB is refilled.
+
+**When TLB matters:**
+- Accessing many small, scattered allocations (each may be on a different page).
+- Unified memory page faults: when a GPU thread accesses a page that hasn't been migrated to GPU memory yet, it causes a page fault → the page is migrated from CPU → very expensive (microseconds, not cycles).
+- Very large working sets that exceed TLB coverage.
+
+**Unified Memory and page faults:**
+```
+Thread accesses page not in GPU memory
+  → TLB miss → Page fault → Driver interrupt
+  → Driver migrates page from CPU to GPU (or from another GPU)
+  → TLB entry updated → Thread resumes
+```
+This is why `cudaMemPrefetchAsync` is important for Unified Memory: it pre-migrates pages to avoid runtime faults.
+
+### Thread block scheduling
+
+The **GigaThread Engine** (global scheduler) distributes thread blocks to SMs at kernel launch time and during execution.
+
+**How it works:**
+1. Kernel launch specifies grid dimensions (total blocks) and block dimensions.
+2. The GigaThread engine assigns blocks to SMs based on resource availability.
+3. Each SM can hold multiple blocks simultaneously (limited by registers, shared memory, and max-blocks-per-SM).
+4. When a block finishes, the SM becomes available for a new block (if any remain in the grid).
+
+**Scheduling order:**
+- Blocks are generally dispatched in **linear order** (block 0 first, then 1, 2, ...), distributed round-robin across SMs.
+- But this is **not guaranteed** by the CUDA programming model. You cannot assume any specific execution order of blocks.
+- In practice, blocks are often assigned in 3D grid order: X varies fastest, then Y, then Z.
+
+**Why it matters:**
+- **Tail effect**: if you have 1000 blocks and 132 SMs, the first 132 blocks run in parallel. The last wave may have only a few blocks, leaving most SMs idle. This is the "tail effect" or "wave quantization."
+  ```
+  1000 blocks / 132 SMs = 7 full waves + 76 blocks in the last wave
+  Last wave: 76 SMs busy, 56 idle → wasted compute
+  ```
+  Mitigation: make blocks smaller (more of them, smoother tail) or use persistent kernels.
+
+- **Persistent kernels**: launch exactly as many blocks as SMs can hold, each block loops over its share of work:
+  ```cpp
+  __global__ void persistent_kernel(float* data, int total_work, int items_per_block) {
+      int block_start = blockIdx.x * items_per_block;
+      for (int i = block_start; i < total_work; i += gridDim.x * items_per_block) {
+          // process item i
+      }
+  }
+  ```
+
+- **Hopper Thread Block Clusters**: for the first time, you can control co-scheduling. Blocks in a cluster are guaranteed to run on SMs in the same GPC, enabling distributed shared memory access across blocks.
+
+### NVLink and interconnect
+
+**NVLink** is NVIDIA's high-bandwidth GPU-to-GPU interconnect, bypassing PCIe.
+
+| Generation | Per-link BW (bidirectional) | Links per GPU | Total BW | GPUs |
+|---|---|---|---|---|
+| NVLink 3.0 | 50 GB/s | 12 | 600 GB/s | A100 |
+| NVLink 4.0 | 50 GB/s | 18 | 900 GB/s | H100 |
+
+**NVSwitch**: a crossbar switch that connects all GPUs in a node with full bisection bandwidth. In an 8-GPU H100 DGX node, every GPU can talk to every other GPU at full NVLink speed simultaneously.
+
+```
+Without NVSwitch:         With NVSwitch:
+GPU0 -- GPU1              GPU0 --|
+GPU2 -- GPU3              GPU1 --|-- NVSwitch -- full mesh
+(limited topology)        GPU2 --|
+                          ...    |
+```
+
+**PCIe Gen5**: 64 GB/s bidirectional (per x16 slot). Used for CPU-GPU communication and for GPUs without NVLink.
+
+**How to check topology:**
+```bash
+nvidia-smi topo --matrix
+# Output shows NV18 (18 NVLink connections), PHB (PCIe host bridge), etc.
+```
+
+**Why it matters for kernels:**
+- **Multi-GPU kernels**: data transfer between GPUs via NVLink is ~15x faster than PCIe. Use `cudaMemcpyPeerAsync` or NCCL for GPU-to-GPU transfers.
+- **Gradient all-reduce in training**: NCCL uses NVLink rings/trees for collective operations. The interconnect bandwidth determines the communication overhead in data-parallel training.
+- **Tensor parallelism**: splits a single layer across GPUs, requiring frequent all-reduce of activations. Only viable with NVLink bandwidth — too slow over PCIe.
+
+### Power management and clock domains
+
+GPUs have multiple clock domains and dynamic frequency scaling:
+
+**Clock domains:**
+- **Graphics/SM clock**: controls SM execution speed. This is what you lock for benchmarking.
+- **Memory clock**: controls HBM bandwidth. Usually not user-adjustable.
+- **Video clock**: for encode/decode engines (not relevant for compute).
+
+**Dynamic clocking (GPU Boost):**
+- The GPU automatically adjusts SM clock based on temperature, power draw, and utilization.
+- Under heavy load, the clock may throttle down if the GPU hits its power or thermal limit.
+- This causes **variable kernel runtime** — the same kernel may run faster on a cool GPU than a hot one.
+
+**For consistent benchmarking:**
+```bash
+# Lock clocks to a fixed frequency
+sudo nvidia-smi -pm 1                        # persistence mode
+sudo nvidia-smi -lgc 1980,1980               # lock SM clock at 1980 MHz
+sudo nvidia-smi -lmc 1593,1593               # lock memory clock (if supported)
+
+# Run benchmarks...
+
+sudo nvidia-smi -rgc                          # reset to default
+sudo nvidia-smi -rmc                          # reset memory clock
+```
+
+**Power monitoring during a kernel:**
+```bash
+nvidia-smi dmon -s p -d 1                    # power draw every 1 second
+# Or programmatically:
+nvmlDeviceGetPowerUsage(device, &power_mW);  # NVML API
+```
+
+**Thermal throttling thresholds (typical):**
+- **Slowdown**: ~83°C — GPU reduces clocks to stay below this.
+- **Shutdown**: ~90°C — GPU shuts down to prevent damage.
+- Check with: `nvidia-smi -q | grep -i "Temperature\|Throttle"`
+
 ### Query the architecture yourself
 
 ```bash
 nvidia-smi                                    # GPU visible? temp, power, VRAM
+nvidia-smi -q | grep -E "Product Name|Compute Mode|GPU Current Temp|Power Draw"
+nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw --format=csv
 nvidia-smi -q | grep -E "Product Name|Compute Mode|GPU Current Temp|Power Draw"
 nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw --format=csv
 ```

@@ -109,6 +109,74 @@ __global__ void matmulTiled(const float* A, const float* B, float* C, int N) {
 Each global element loaded once per tile, reused TILE times → global traffic cut ~TILE×.
 Bank conflicts: in THIS access pattern `As[threadIdx.y][k]` broadcasts (same address per warp — fine) and `Bs[k][threadIdx.x]` is stride-1 (fine). A conflict appears when a warp reads a COLUMN, e.g. `tile[threadIdx.x][k]` — all 32 rows of one column live in one bank since bank = col % 32. Fix: pad to `[TILE][TILE+1]`.
 
+### A5b. Register-Tiled MatMul
+**Pseudocode (interviewer-friendly):**
+```
+register_tiled_matmul(A, B, C, M, N, K):
+    // Each thread computes a TM×TN submatrix of C entirely in registers
+    allocate regC[TM][TN] = 0    // lives in registers, no memory traffic
+
+    for each tile along K (step BK):
+        load BM×BK tile of A → shared memory As      // coalesced global read
+        load BK×BN tile of B → shared memory Bs      // coalesced global read
+        __syncthreads()
+
+        for k = 0 to BK:                             // inner loop
+            load TM values from As column k → regA   // one read per thread row
+            load TN values from Bs row k   → regB    // one read per thread col
+            for i in TM:
+                for j in TN:
+                    regC[i][j] += regA[i] * regB[j]  // pure register math
+        __syncthreads()
+
+    write regC[TM][TN] → global C                   // one write per output element
+```
+
+**CUDA sketch:**
+```cuda
+#define BM 64   // block tile rows
+#define BN 64   // block tile cols
+#define BK 16   // block tile depth
+#define TM 4    // register tile rows per thread
+#define TN 4    // register tile cols per thread
+
+__global__ void matmulRegTiled(const float* A, const float* B, float* C, int M, int N, int K) {
+    __shared__ float As[BM][BK];
+    __shared__ float Bs[BK][BN];
+
+    float regC[TM][TN] = {};      // TM*TN registers per thread
+    float regA[TM], regB[TN];
+
+    int threadRow = threadIdx.x / (BN / TN);
+    int threadCol = threadIdx.x % (BN / TN);
+
+    for (int bk = 0; bk < K; bk += BK) {
+        // load tiles into shared memory (each thread loads multiple elements)
+        // ... (index math omitted for clarity)
+        __syncthreads();
+
+        for (int k = 0; k < BK; k++) {
+            for (int tm = 0; tm < TM; tm++)
+                regA[tm] = As[threadRow * TM + tm][k];
+            for (int tn = 0; tn < TN; tn++)
+                regB[tn] = Bs[k][threadCol * TN + tn];
+            for (int tm = 0; tm < TM; tm++)
+                for (int tn = 0; tn < TN; tn++)
+                    regC[tm][tn] += regA[tm] * regB[tn];   // all registers
+        }
+        __syncthreads();
+    }
+    // write regC to global C
+}
+```
+**Why it's faster than shared-memory tiling alone:**
+- Shared memory tiling (A5): eliminates redundant global reads — each element loaded once per tile, reused BK times. Still hits shared memory on every inner-loop access.
+- Register tiling (A5b): the inner `k` loop never touches shared memory — `regA` and `regB` stay in registers. Shared memory is only accessed BK times per tile to load into registers, then pure register arithmetic for TM×TN×BK MACs.
+- Result: shared mem bandwidth drops by TM×TN factor. This is why you get 5.65× on top of shared memory tiling — the inner loop is now fully register-resident, matching what cuBLAS does internally.
+- Each thread computes TM×TN=16 outputs instead of 1 → amortizes index computation and load overhead across more useful work (instruction-level efficiency).
+
+Key numbers to remember: shared tiling alone ~170 GFLOPS on sm_87, adding register tiling → ~968 GFLOPS (5.65×), Tensor Cores → ~1777 GFLOPS (10.4× total).
+
 ### A6. Transpose (coalesced both directions)
 ```cuda
 #define TILE 32
@@ -756,3 +824,229 @@ General principle (say this — it's the whole philosophy): **structure parallel
 **R13.** Forces 64-byte alignment (cache-line). Uses: give each thread's data its own cache line (kill false sharing); align buffers for SIMD.
 **R14.** `std::atomic<int>` — lock-free hardware RMW for a simple counter, no lock overhead or blocking. Mutex only when protecting MULTIPLE variables that must change together.
 **R15.** gcc: `-fopt-info-vec` (or `-fopt-info-vec-missed` for why NOT — the more useful one). clang: `-Rpass=loop-vectorize` / `-Rpass-missed=loop-vectorize`.
+
+---
+
+## Part 5 — Quantization (Inference Kernels)
+
+*Directly relevant for NPU/edge AI roles. All code is plain C++ unless noted.*
+
+---
+
+### A41. Symmetric Per-Tensor Quantization (float → int8)
+```cpp
+#include <cmath>
+#include <cstdint>
+#include <algorithm>
+#include <vector>
+
+// Compute scale from max absolute value; zero_point = 0 (symmetric)
+float compute_scale_symmetric(const float* x, int n) {
+    float max_abs = 0.0f;
+    for (int i = 0; i < n; i++) max_abs = std::max(max_abs, std::abs(x[i]));
+    return max_abs / 127.0f;   // INT8 range: [-127, 127] (leave -128 unused for symmetry)
+}
+
+void quantize_symmetric(const float* x, int8_t* q, int n, float scale) {
+    for (int i = 0; i < n; i++) {
+        float val = std::round(x[i] / scale);
+        q[i] = (int8_t)std::max(-127.0f, std::min(127.0f, val));   // clamp
+    }
+}
+
+void dequantize_symmetric(const int8_t* q, float* x, int n, float scale) {
+    for (int i = 0; i < n; i++) x[i] = q[i] * scale;
+}
+```
+Key points: scale = max_abs / 127 maps the float range onto [-127, 127]. -128 is intentionally avoided so that negation of any value stays in range (important for symmetric math). Rounding before clamping reduces quantization error vs truncating. Dequant is just a multiply — cheap at inference.
+
+---
+
+### A42. Asymmetric Per-Tensor Quantization (float → uint8)
+```cpp
+struct QuantParams { float scale; int32_t zero_point; };
+
+QuantParams compute_params_asymmetric(const float* x, int n) {
+    float x_min = x[0], x_max = x[0];
+    for (int i = 1; i < n; i++) { x_min = std::min(x_min, x[i]); x_max = std::max(x_max, x[i]); }
+    float scale = (x_max - x_min) / 255.0f;                          // uint8: [0, 255]
+    int32_t zp = (int32_t)std::round(-x_min / scale);
+    zp = std::max(0, std::min(255, zp));
+    return {scale, zp};
+}
+
+void quantize_asymmetric(const float* x, uint8_t* q, int n, QuantParams p) {
+    for (int i = 0; i < n; i++) {
+        int32_t val = (int32_t)std::round(x[i] / p.scale) + p.zero_point;
+        q[i] = (uint8_t)std::max(0, std::min(255, val));
+    }
+}
+
+void dequantize_asymmetric(const uint8_t* q, float* x, int n, QuantParams p) {
+    for (int i = 0; i < n; i++) x[i] = p.scale * (q[i] - p.zero_point);
+}
+```
+Asymmetric vs symmetric: asymmetric shifts the zero point to cover the actual data range (critical for ReLU outputs which are all non-negative — symmetric wastes half the range). Cost: zero_point correction must be accounted for during GEMM (extra bias term per row). Symmetric is simpler for weights; asymmetric is better for activations.
+
+---
+
+### A43. Quantized Dot Product (INT8 → INT32 accumulation)
+```cpp
+// Symmetric INT8 inputs, accumulate in INT32 to avoid overflow, then scale to float
+float qdot(const int8_t* a, const int8_t* b, int n,
+           float scale_a, float scale_b) {
+    int32_t acc = 0;
+    for (int i = 0; i < n; i++)
+        acc += (int32_t)a[i] * (int32_t)b[i];   // INT8*INT8 → INT32: no overflow up to n~16M
+    return acc * scale_a * scale_b;              // single dequant at the end
+}
+```
+Why accumulate in INT32: INT8 * INT8 → up to 127*127 = 16129 per term; summing n=4096 terms → ~66M, which overflows INT16 (max 32767) but fits INT32 comfortably. The key insight: defer dequantization to AFTER the accumulation — if you dequant each product to float first, you lose the throughput benefit of integer arithmetic entirely. Scale product `scale_a * scale_b` can be precomputed once.
+
+---
+
+### A44. Quantized MatMul (INT8 weights × INT8 activations → INT32 → float)
+```cpp
+// C[M][N] = A[M][K] * B[K][N], all INT8, output float
+// Symmetric quantization assumed (zero_point = 0)
+void qmatmul(const int8_t* A, const int8_t* B, float* C,
+             int M, int N, int K,
+             float scale_a, float scale_b) {
+    float output_scale = scale_a * scale_b;
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            int32_t acc = 0;
+            for (int k = 0; k < K; k++)
+                acc += (int32_t)A[i*K + k] * (int32_t)B[k*N + j];
+            C[i*N + j] = acc * output_scale;
+        }
+    }
+}
+```
+This is the skeleton of every quantized GEMM (TFLite, ONNX Runtime, QNN). On NPUs/DSPs the inner loop runs as INT8 MAC units which give 4× throughput over FP32 MACs at the same area. The accumulator stays INT32 until the final store — requantize to INT8 if feeding another quantized layer.
+
+---
+
+### A45. Requantization (INT32 → INT8, layer-to-layer)
+```cpp
+// After a quantized GEMM the accumulator is INT32.
+// Requantize to INT8 to feed the next layer without going back to float.
+// multiplier = (scale_input * scale_weight) / scale_output
+void requantize(const int32_t* acc, int8_t* out, int n,
+                float multiplier, int32_t output_zero_point = 0) {
+    for (int i = 0; i < n; i++) {
+        float val = acc[i] * multiplier + output_zero_point;
+        val = std::round(val);
+        out[i] = (int8_t)std::max(-127.0f, std::min(127.0f, val));
+    }
+}
+```
+Why requantize instead of dequant→float→quant: keeps the entire inference in integer domain — no float memory traffic between layers, critical for edge/NPU where FP units may not exist. In practice the multiplier is approximated as a fixed-point integer + shift (e.g., TFLite's `MultiplyByQuantizedMultiplier`) to avoid any floats at all.
+
+---
+
+### A46. Per-Channel Quantization (weights)
+```cpp
+// Each output channel gets its own scale — much better accuracy than per-tensor for weights
+void quantize_per_channel(const float* W, int8_t* Wq,
+                          float* scales, int out_ch, int in_ch) {
+    for (int oc = 0; oc < out_ch; oc++) {
+        const float* row = W + oc * in_ch;
+        float max_abs = 0.0f;
+        for (int ic = 0; ic < in_ch; ic++) max_abs = std::max(max_abs, std::abs(row[ic]));
+        scales[oc] = max_abs / 127.0f;
+        for (int ic = 0; ic < in_ch; ic++) {
+            float v = std::round(row[ic] / scales[oc]);
+            Wq[oc * in_ch + ic] = (int8_t)std::max(-127.0f, std::min(127.0f, v));
+        }
+    }
+}
+```
+Why per-channel: different output channels of a weight matrix can have very different magnitude distributions. A single global scale undershoots the small channels (losing precision) while clamping the large ones (losing range). Per-channel gives each filter its own scale → much tighter quantization error. Cost: during GEMM, each output row is multiplied by a different `scales[oc] * scale_activation` — one extra multiply per output element (negligible).
+
+---
+
+### A47. Fused Quantized ReLU (clamp in integer domain)
+```cpp
+// ReLU after a quantized layer: just clamp to [0, 127] for symmetric INT8
+// No dequant needed — integer clamp IS ReLU in the quantized domain
+void qrelu_symmetric(int8_t* x, int n) {
+    for (int i = 0; i < n; i++) x[i] = x[i] < 0 ? 0 : x[i];
+}
+
+// For asymmetric uint8: ReLU maps to clamping at zero_point (represents 0.0f)
+void qrelu_asymmetric(uint8_t* x, int n, uint8_t zero_point) {
+    for (int i = 0; i < n; i++) if (x[i] < zero_point) x[i] = zero_point;
+}
+```
+This is operator fusion in the quantized domain — the activation is folded into the requantization step with no extra pass. For symmetric INT8: 0.0f maps to integer 0, so ReLU = clamp negatives to 0. For asymmetric: 0.0f maps to zero_point, so ReLU = clamp values below zero_point. Both are a branchless max — hardware does this in a single cycle.
+
+---
+
+### A48. Weight-Only Quantization (INT4, for LLM inference)
+```cpp
+// Pack two INT4 weights into one byte — common in LLM weight-only quant (GPTQ, AWQ style)
+void pack_int4(const int8_t* weights, uint8_t* packed, int n) {
+    // n must be even; weights assumed in [-8, 7]
+    for (int i = 0; i < n / 2; i++)
+        packed[i] = ((weights[2*i] & 0x0F) | ((weights[2*i+1] & 0x0F) << 4));
+}
+
+void unpack_int4(const uint8_t* packed, int8_t* weights, int n) {
+    for (int i = 0; i < n / 2; i++) {
+        weights[2*i]   = (int8_t)(packed[i] & 0x0F);
+        weights[2*i+1] = (int8_t)((packed[i] >> 4) & 0x0F);
+        // sign-extend from 4 bits
+        if (weights[2*i]   & 0x08) weights[2*i]   |= 0xF0;
+        if (weights[2*i+1] & 0x08) weights[2*i+1] |= 0xF0;
+    }
+}
+```
+Why INT4 for LLMs: weights dominate memory bandwidth in autoregressive decoding (each token does a full weight load for one output). INT4 halves the weight size vs INT8 → halves memory bandwidth → near 2× token throughput on memory-bound inference. Activations typically stay FP16/INT8; only weights are INT4 (weight-only quant). Sign-extension from 4-bit: bit 3 is the sign bit; if set, OR with 0xF0 to extend to INT8.
+
+---
+
+### A49. Quantization Error Analysis (coding exercise style)
+```cpp
+// Measure SNR (signal-to-noise ratio) between float and quantized-dequantized
+#include <cmath>
+double quantization_snr(const float* original, const float* reconstructed, int n) {
+    double signal = 0.0, noise = 0.0;
+    for (int i = 0; i < n; i++) {
+        signal += (double)original[i] * original[i];
+        double err = original[i] - reconstructed[i];
+        noise  += err * err;
+    }
+    return 10.0 * std::log10(signal / noise);   // dB; higher = better
+}
+// Expected: INT8 symmetric ~48 dB, INT4 ~24 dB, FP16 ~96 dB
+```
+Rule of thumb: each bit of quantization gives ~6 dB SNR. INT8 → ~48 dB is enough for most inference with <1% accuracy drop. INT4 → ~24 dB needs calibration techniques (GPTQ, AWQ, SmoothQuant) to recover accuracy. This metric is what you'd use when profiling a new quantization scheme on an NPU.
+
+---
+
+## Part 5b — Quantization Rapid-Fire
+
+**Q1.** Why accumulate in INT32 during quantized GEMM?
+INT8*INT8 products reach 16129; summing K=4096 of them → ~66M, overflows INT16, fits INT32.
+
+**Q2.** Symmetric vs asymmetric — when to use each?
+Symmetric for weights (near-zero-mean distributions fit well, simpler math). Asymmetric for activations (post-ReLU data is non-negative — symmetric wastes half the range).
+
+**Q3.** What is a zero point?
+The integer value that represents 0.0f in asymmetric quantization. Dequant: `x_float = scale * (x_int - zero_point)`.
+
+**Q4.** Why per-channel quantization for weights?
+Each output channel has its own magnitude distribution. One global scale forces a bad tradeoff — per-channel scale minimizes max quantization error per channel.
+
+**Q5.** What is requantization?
+Converting INT32 accumulator output back to INT8 to feed the next layer, using a precomputed fixed-point multiplier. Avoids float memory traffic between layers.
+
+**Q6.** Why INT4 for LLM weights but not activations?
+LLM decoding is memory-bandwidth-bound (weights loaded per token). INT4 halves weight size → halves bandwidth → ~2× throughput. Activations are computed fresh each forward pass and have wider dynamic range — INT4 loses too much precision there.
+
+**Q7.** What is calibration in post-training quantization?
+Running a representative dataset through the model to collect activation statistics (min/max or percentiles) to set scale/zero_point. Static quant needs this upfront; dynamic quant computes it per-inference (slower but more accurate for outlier inputs).
+
+**Q8.** What is SmoothQuant / why do LLM activations hurt INT8?
+LLMs (especially attention layers) have activation outliers — a few channels with 100× larger magnitude than the rest. Naively quantizing with one scale destroys the small channels. SmoothQuant migrates the difficulty from activations to weights (where per-channel quant handles it) by scaling: `Y = (X / s) * (s * W)` where s absorbs the outlier magnitude.
