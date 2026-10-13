@@ -936,7 +936,155 @@ EOF
 
 ---
 
-## 8. Save your work (important with the credit deadline)
+## 8. RCCL for collective communications
+
+**RCCL** (ROCm Collective Communications Library, pronounced "rockle") is AMD's equivalent of NVIDIA's NCCL. It provides the same collective operations, optimized for AMD's Infinity Fabric topology. The API is nearly identical to NCCL — most NCCL code works with RCCL by just changing the header and link flags.
+
+### Collective operations
+
+These are the same fundamental communication patterns used by NCCL. Every distributed training framework uses these under the hood.
+
+```
+AllReduce — most common in data-parallel training (gradient sync)
+Each GPU has a value. After AllReduce, every GPU has the sum (or max, min, etc.)
+
+Before:  GPU0=[1]  GPU1=[2]  GPU2=[3]  GPU3=[4]
+After:   GPU0=[10] GPU1=[10] GPU2=[10] GPU3=[10]  (sum = 10)
+```
+
+```
+Broadcast — one GPU sends its data to all others
+
+Before:  GPU0=[DATA]  GPU1=[?]  GPU2=[?]  GPU3=[?]
+After:   GPU0=[DATA]  GPU1=[DATA]  GPU2=[DATA]  GPU3=[DATA]
+```
+
+```
+Reduce — all GPUs contribute, only one GPU gets the result
+
+Before:  GPU0=[1]  GPU1=[2]  GPU2=[3]  GPU3=[4]
+After:   GPU0=[10] GPU1=[2]  GPU2=[3]  GPU3=[4]  (only root has sum)
+```
+
+```
+AllGather — each GPU has a piece, after AllGather every GPU has all pieces
+
+Before:  GPU0=[A]  GPU1=[B]  GPU2=[C]  GPU3=[D]
+After:   GPU0=[ABCD]  GPU1=[ABCD]  GPU2=[ABCD]  GPU3=[ABCD]
+```
+
+```
+ReduceScatter — reduce + scatter: reduce across GPUs, each gets a different chunk
+
+Before:  GPU0=[a0,a1,a2,a3]  GPU1=[b0,b1,b2,b3]  GPU2=[c0,c1,c2,c3]  GPU3=[d0,d1,d2,d3]
+After:   GPU0=[a0+b0+c0+d0]  GPU1=[a1+b1+c1+d1]  GPU2=[a2+b2+c2+d2]  GPU3=[a3+b3+c3+d3]
+```
+
+```
+AllToAll — each GPU sends a different piece to each other GPU (transpose)
+
+Before:  GPU0=[a0,a1,a2,a3]  GPU1=[b0,b1,b2,b3]
+After:   GPU0=[a0,b0,c0,d0]  GPU1=[a1,b1,c1,d1]  (each gets its "column")
+```
+
+### How AllReduce is implemented
+
+RCCL (like NCCL) uses **ring** and **tree** algorithms depending on message size and topology.
+
+**Ring AllReduce (large messages):**
+GPUs are arranged in a logical ring. Two phases:
+
+```
+Phase 1: ReduceScatter (N-1 steps)
+Each GPU sends a chunk to the next GPU in the ring, which adds it to its own chunk.
+After N-1 steps, each GPU has the fully reduced version of one chunk.
+
+Phase 2: AllGather (N-1 steps)
+Each GPU sends its fully reduced chunk around the ring.
+After N-1 steps, every GPU has all chunks.
+```
+
+Total data transferred per GPU: `2 * (N-1)/N * data_size` — bandwidth-optimal.
+
+**Tree AllReduce (small messages):**
+Binary tree for lower latency (log₂N steps instead of 2(N-1)):
+
+```
+        GPU0 (root)
+       /    \
+    GPU1    GPU2
+    /
+  GPU3
+
+Reduce up the tree → Broadcast down the tree
+Fewer steps but less bandwidth utilization
+```
+
+RCCL automatically picks the best algorithm based on message size and topology.
+
+### Code example
+
+```cpp
+#include <rccl/rccl.h>
+
+ncclComm_t comms[num_gpus];   // API uses ncclComm_t (same types as NCCL)
+ncclCommInitAll(comms, num_gpus, dev_list);
+
+// AllReduce across GPUs
+for (int g = 0; g < num_gpus; g++) {
+    hipSetDevice(g);
+    ncclAllReduce(d_send[g], d_recv[g], count, ncclFloat, ncclSum, comms[g], streams[g]);
+}
+
+// Synchronize all
+for (int g = 0; g < num_gpus; g++) {
+    hipSetDevice(g);
+    hipStreamSynchronize(streams[g]);
+}
+```
+
+Build with: `hipcc -lrccl ...`
+
+### NCCL vs RCCL comparison
+
+| Feature | NCCL (NVIDIA) | RCCL (AMD) |
+|---|---|---|
+| Full name | NVIDIA Collective Communications Library | ROCm Collective Communications Library |
+| API | `nccl.h` | `rccl/rccl.h` (same function names) |
+| Link flag | `-lnccl` | `-lrccl` |
+| Interconnect | NVLink, NVSwitch, InfiniBand | Infinity Fabric, xGMI |
+| Algorithms | Ring, tree, collnet | Ring, tree (similar set) |
+| Used by | PyTorch (default), DeepSpeed, Megatron | PyTorch (auto-detected on ROCm), DeepSpeed |
+
+### Where each collective is used in training
+
+| Collective | Where it's used |
+|---|---|
+| **AllReduce** | Data parallelism — sync gradients across GPUs after backward pass |
+| **AllGather** | FSDP (Fully Sharded Data Parallel) — gather full parameters before forward pass |
+| **ReduceScatter** | FSDP — shard gradients after backward pass; ZeRO optimizer stage 2 |
+| **AllToAll** | Expert parallelism in MoE (Mixture of Experts) — route tokens to experts |
+| **Broadcast** | Distribute model weights from rank 0 at initialization |
+| **Reduce** | Collect metrics/losses to a single rank for logging |
+
+### Debugging RCCL
+
+```bash
+# Verbose RCCL logging (same env vars as NCCL)
+NCCL_DEBUG=INFO ./my_training_script
+
+# Show which algorithm/protocol RCCL chose
+NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,COLL ./my_training_script
+
+# Common issues:
+# - Timeout → usually a deadlock (not all ranks call the collective)
+# - NCCL_P2P_DISABLE=1 → fallback if Infinity Fabric has issues
+# - HSA_FORCE_FINE_GRAIN_PCIE=1 → may help with host-device transfers
+```
+
+---
+
+## 9. Save your work (important with the credit deadline)
 
 ```bash
 cd ~/rocm-practice
